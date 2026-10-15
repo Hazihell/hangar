@@ -1,0 +1,17 @@
+---
+name: tests
+description: "Use when writing, changing or reviewing a test: what makes a test worth keeping, and the anti-patterns to name."
+---
+
+A test is worth keeping when it fails if the behaviour it names breaks, and only then.
+
+## What a good test is
+
+Tests verify behavior through public interfaces, not implementation details. Code can change entirely; tests shouldn't. A good test reads like a specification: "user can checkout with valid cart" tells you exactly what capability exists, and it survives refactors because it doesn't care about internal structure.
+
+See [examples.md](examples.md) for examples and [mocking.md](mocking.md) for mocking guidelines.
+
+## Anti-patterns
+
+- **Implementation-coupled**: mocks internal collaborators, tests private methods, verifies through a side channel (querying the database instead of using the interface), or asserts styling classes. The tell: the test breaks when you refactor but behavior hasn't changed.
+- **Tautological**: the assertion recomputes the expected value the way the code does (`expect(add(a, b)).toBe(a + b)`, a snapshot derived by hand the same way, a constant asserted equal to itself, a value copied from the code's own output), so it passes by construction and can never disagree with the code. Expected values must come from an independent source of truth: a known-good literal, a worked example, the spec.

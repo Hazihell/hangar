@@ -1,0 +1,5 @@
+interface:
+  display_name: "Coordinate"
+  short_description: "Split work into tasks for sub-agents and stay available to the user."
+policy:
+  allow_implicit_invocation: false

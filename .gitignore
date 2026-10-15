@@ -1,0 +1,12 @@
+.DS_Store
+# old manual snapshots; git history replaces them
+backups/
+# synced by Claude Code itself from your claude.ai account
+skills/synced/
+# installed per machine by `agents setup`
+node_modules/
+# impeccable downloads the right binary for each OS on first run
+skills/impeccable/scripts/bin/
+# Framer skills hold per-site data; they live in each site project instead
+skills/framer/
+skills/framer-code-components/

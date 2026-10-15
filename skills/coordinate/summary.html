@@ -1,0 +1,156 @@
+<!doctype html>
+<!--
+Template for the final summary page. Copy it, replace the JSON in the "data" block, and show the page to the user. Change nothing else.
+
+summary: what is now different overall, in a few sentences: the branch, what was merged, the checks on the merged result.
+tasks: one entry per task.
+  name       the task
+  asked      the user's words it answers, quoted
+  changed    what is now different, for the user
+  views      the shape of the change, as its worker drew it: caption says what it shows,
+             kind is "diff" or "text", body is the view itself in plain text
+  shots     screenshots: src is the image's absolute path, caption says what it shows
+  seen       where it was seen working, and what was not seen
+  review     what the review found and how it closed
+  beyond     anything the worker built beyond the brief, one sentence each
+  made       choices the worker made that the user may want to change, one sentence each
+  settled    decisions already settled: q is the question, by is the user's words that settled it
+  decisions  decisions still open:
+               q        the question, in one line
+               ctx      what the user needs to know to answer it
+               options  the recommendation first, then the alternatives
+               unsure   true when the worker was not confident in its recommendation
+open: decisions still open that belong to no task, in the same shape as decisions.
+Leave any list empty when it has nothing.
+-->
+<html><head><meta charset="utf-8"><style>
+body{font-family:var(--font-sans);font-size:14px;line-height:1.5;color:var(--foreground);padding-bottom:4px}
+#summary{margin:0 0 6px}
+#count{color:var(--muted-foreground);font-size:13px;margin:0 0 18px}
+section{border-top:1px solid var(--border);padding:18px 0 8px}
+h2{font-size:16px;font-weight:600;margin:0 0 6px}
+h3{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--muted-foreground);margin:16px 0 6px}
+blockquote{margin:0 0 10px;padding-left:10px;border-left:3px solid var(--border);color:var(--muted-foreground);font-style:italic}
+p{margin:0 0 8px}
+.shots{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px;margin:10px 0}
+figure{margin:0}
+figure img{width:100%;border:1px solid var(--border);border-radius:var(--radius);display:block;cursor:zoom-in;background:var(--muted)}
+figure.big{grid-column:1/-1}
+figure.big img{cursor:zoom-out}
+.view{margin:10px 0}
+.view pre{margin:0;overflow-x:auto;background:var(--code-background);color:var(--code-foreground);border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px;font:12px/1.55 var(--font-mono)}
+.view .add{color:var(--success)}
+.view .del{color:var(--destructive)}
+figcaption,.view .cap{font-size:12px;color:var(--muted-foreground);margin-top:4px}
+dl{display:grid;grid-template-columns:max-content 1fr;gap:4px 12px;margin:8px 0}
+dt{font-size:12px;color:var(--muted-foreground);padding-top:2px}
+dd{margin:0}
+ul.settled{margin:0;padding-left:18px}
+ul.settled li{margin-bottom:4px}
+.by{color:var(--muted-foreground)}
+.card{border:1px solid var(--border);border-radius:var(--radius);padding:12px 14px;margin-bottom:10px}
+.q{font-weight:600;margin:0 0 4px}
+.ctx{color:var(--muted-foreground);margin:0 0 8px}
+label.opt{display:flex;gap:8px;align-items:flex-start;padding:5px 8px;border-radius:6px;cursor:pointer}
+label.opt input[type=radio]{margin-top:3px;accent-color:var(--primary)}
+label.opt:has(input[type=radio]:checked){background:var(--secondary);color:var(--secondary-foreground)}
+.tag{font-size:11px;border:1px solid var(--border);border-radius:999px;padding:0 7px;margin-left:8px;white-space:nowrap;color:var(--muted-foreground)}
+.tag.warn{border-color:var(--warning);color:var(--warning)}
+input[type=text]{flex:1;min-width:0;background:transparent;border:1px solid var(--input);border-radius:6px;padding:4px 8px;color:inherit;font:inherit}
+.choice{display:flex;gap:10px;align-items:flex-start;padding:7px 0;border-top:1px solid var(--border);flex-wrap:wrap}
+.choice:first-of-type{border-top:0}
+.choice span{flex:1;min-width:200px}
+button{font:inherit;border-radius:6px;border:1px solid var(--border);background:transparent;color:inherit;padding:3px 10px;cursor:pointer}
+.bar{position:sticky;bottom:0;background:var(--background);border-top:1px solid var(--border);padding:10px 0 6px;margin-top:14px}
+.row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+button.primary{background:var(--primary);color:var(--primary-foreground);border-color:transparent;padding:7px 14px;font-weight:600}
+#status{color:var(--muted-foreground);font-size:13px}
+textarea{width:100%;box-sizing:border-box;height:120px;margin-top:8px;background:var(--code-background);color:var(--code-foreground);border:1px solid var(--border);border-radius:var(--radius);padding:10px;font:12px/1.5 var(--font-mono);resize:vertical}
+</style></head><body>
+<script type="application/json" id="data">
+{
+  "summary": "What is now different overall: the branch, what was merged, the checks on the merged result.",
+  "tasks": [
+    {
+      "name": "Task name",
+      "asked": "The user's words this task answers.",
+      "changed": "What is now different, for the user.",
+      "views": [{ "caption": "What the view shows", "kind": "diff", "body": " a line that stays\n+a line that was added\n-a line that was removed" }],
+      "shots": [{ "src": "/absolute/path/to/screenshot.png", "caption": "What it shows" }],
+      "seen": "Where it was seen working, and what was not seen.",
+      "review": "What the review found and how it closed.",
+      "beyond": ["Something the worker built beyond the brief."],
+      "made": ["A choice the worker made."],
+      "settled": [{ "q": "A question already settled?", "by": "The user's words that settled it." }],
+      "decisions": [
+        { "q": "The question?", "ctx": "What the user needs to know to answer it.", "options": ["The recommendation", "An alternative"], "unsure": false }
+      ]
+    }
+  ],
+  "open": []
+}
+</script>
+<p id="summary"></p>
+<p id="count"></p>
+<div id="tasks"></div>
+<div id="general"></div>
+<div class="bar"><div class="row"><button class="primary" id="copy">Copy answers for the coordinator</button><span id="status"></span><button id="show" style="margin-left:auto">Show text</button></div><textarea id="out" readonly hidden></textarea></div>
+<script>
+const $=s=>document.querySelector(s);
+let DATA;
+try{DATA=JSON.parse($('#data').textContent)}catch(e){$('#summary').textContent='The data block is not valid JSON: '+e.message;console.error('summary.html: invalid data block: '+e.message);throw e}
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const T=DATA.tasks||[];
+const D=[],C=[];
+T.forEach(t=>{(t.decisions||[]).forEach(d=>D.push({...d,task:t.name}));(t.beyond||[]).forEach(x=>C.push({text:x,task:t.name,beyond:true}));(t.made||[]).forEach(x=>C.push({text:x,task:t.name}))});
+(DATA.open||[]).forEach(d=>D.push({...d,task:''}));
+const decision=i=>{const d=D[i],o=d.options||[];return `<div class="card"><p class="q">${esc(d.q)}${d.unsure?'<span class="tag warn">Worker not confident</span>':''}</p><p class="ctx">${esc(d.ctx)}</p>`+o.map((t,j)=>`<label class="opt"><input type="radio" name="d${i}" value="${j}" ${j==0?'checked':''}><span>${esc(t)}${j==0?'<span class="tag">Recommended</span>':''}</span></label>`).join('')+`<label class="opt"><input type="radio" name="d${i}" value="other" ${o.length?'':'checked'}><input type="text" data-other="${i}" placeholder="Another answer"></label></div>`};
+const choice=i=>{const c=C[i];return `<div class="choice"><span>${esc(c.text)}${c.beyond?'<span class="tag warn">Beyond the brief</span>':''}</span><button data-change="${i}">Change</button><input type="text" data-made="${i}" placeholder="What should it be instead?" hidden style="flex-basis:100%"></div>`};
+const idx=(arr,name)=>arr.map((x,i)=>x.task===name?i:-1).filter(i=>i>=0);
+$('#summary').textContent=DATA.summary||'';
+$('#count').textContent=`${T.length} tasks · ${D.length} decisions for you · ${C.length} choices you can change`;
+$('#tasks').innerHTML=T.map(t=>{
+ const di=idx(D,t.name),ci=idx(C,t.name),st=t.settled||[],sh=t.shots||[],vw=t.views||[];
+ const line=l=>l[0]==='+'?`<span class="add">${esc(l)}</span>`:l[0]==='-'?`<span class="del">${esc(l)}</span>`:esc(l);
+ const facts=[['Seen working',t.seen],['Review',t.review]].filter(f=>f[1]);
+ return `<section><h2>${esc(t.name)}</h2>`+(t.asked?`<blockquote>${esc(t.asked)}</blockquote>`:'')+(t.changed?`<p>${esc(t.changed)}</p>`:'')
+ +vw.map(v=>`<div class="view"><pre>${String(v.body??'').split('\n').map(v.kind==='diff'?line:esc).join('\n')}</pre><div class="cap">${esc(v.caption)}</div></div>`).join('')
+ +(sh.length?`<div class="shots">${sh.map(s=>`<figure><img src="${esc(s.src)}" alt="${esc(s.caption)}"><figcaption>${esc(s.caption)}</figcaption></figure>`).join('')}</div>`:'')
+ +(facts.length?`<dl>${facts.map(f=>`<dt>${f[0]}</dt><dd>${esc(f[1])}</dd>`).join('')}</dl>`:'')
+ +(ci.length?`<h3>Built and chosen by the worker</h3>${ci.map(choice).join('')}`:'')
+ +(st.length?`<h3>Settled</h3><ul class="settled">${st.map(s=>`<li>${esc(s.q)} <span class="by">“${esc(s.by)}”</span></li>`).join('')}</ul>`:'')
+ +(di.length?`<h3>Decisions for you</h3>${di.map(decision).join('')}`:'')+`</section>`}).join('');
+const gi=idx(D,'');
+$('#general').innerHTML=gi.length?`<section><h2>Other decisions</h2>${gi.map(decision).join('')}</section>`:'';
+function build(){
+ let changed=0;
+ const lines=D.map((d,i)=>{
+  const v=$(`input[name=d${i}]:checked`).value;
+  const a=v==='other'?($(`[data-other="${i}"]`).value.trim()||'(nothing written)'):d.options[+v];
+  if(v!=='0')changed++;
+  return `${i+1}. ${d.q}${d.task?` (${d.task})`:''}\n   ${v==='0'?'As recommended':'My answer'}: ${a}`;
+ });
+ const mc=C.map((c,i)=>{const el=$(`[data-made="${i}"]`);return !el.hidden&&el.value.trim()?`- ${c.text} (${c.task})\n   Change to: ${el.value.trim()}`:null}).filter(Boolean);
+ const parts=[];
+ if(D.length)parts.push('My answers to the open decisions.\n\n'+lines.join('\n'));
+ if(C.length)parts.push(mc.length?'Changes to what the workers built or chose:\n'+mc.join('\n')+'\nEverything else they built or chose stands.':'Everything the workers built or chose stands.');
+ const t=parts.join('\n\n')||'No answers needed.';
+ $('#out').value=t;
+ $('#status').textContent=`${changed} of ${D.length} answers differ from the recommendation, ${mc.length} changes.`;
+ return t;
+}
+document.addEventListener('input',e=>{const o=e.target.dataset.other;if(o!==undefined)$(`input[name=d${o}][value=other]`).checked=true;build()});
+document.addEventListener('change',build);
+document.addEventListener('click',e=>{
+ const c=e.target.dataset.change;
+ if(c!==undefined){const el=$(`[data-made="${c}"]`);el.hidden=!el.hidden;e.target.textContent=el.hidden?'Change':'Keep';if(!el.hidden)el.focus();build()}
+ if(e.target.matches('figure img'))e.target.closest('figure').classList.toggle('big');
+});
+$('#show').onclick=()=>{const o=$('#out');o.hidden=!o.hidden;$('#show').textContent=o.hidden?'Show text':'Hide text'};
+$('#copy').onclick=async()=>{const t=build();let ok=false;
+ try{await navigator.clipboard.writeText(t);ok=true}catch(e){try{$('#out').hidden=false;$('#out').select();ok=document.execCommand('copy')}catch(e2){}}
+ $('#status').textContent=ok?'Copied. Paste it in the reply box.':'Copying is blocked here. Select the text below and copy it.';
+ if(!ok){$('#out').hidden=false;$('#out').select()}
+};
+build();
+</script></body></html>

@@ -1,0 +1,325 @@
+#!/usr/bin/env bash
+# Manage this machine's agent setup from the ~/.agents repo.
+# Run `hangar help` for the commands.
+set -euo pipefail
+
+REPO="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")")/.." && pwd)"
+BACKUP_ROOT="$HOME/.hangar-backup"
+T3_CHANNEL="${HANGAR_T3_CHANNEL:-nightly}"
+OS="$(uname -s)"
+
+# Linked into place: tools only read these, so edits land in the repo.
+# Each line: <path in repo>|<path on this machine>
+LINKS="
+claude/CLAUDE.md|$HOME/.claude/CLAUDE.md
+claude/agents|$HOME/.claude/agents
+claude/hooks|$HOME/.claude/hooks
+claude/statusline-command.sh|$HOME/.claude/statusline-command.sh
+skills|$HOME/.claude/skills
+cast/cast.md|$HOME/.codex/AGENTS.md
+bin/hangar|$HOME/.local/bin/hangar
+"
+# Copied, not linked: Claude Code rewrites this file when you change a setting
+# and can replace a symlink with a plain file. `sync` carries it both ways.
+SETTINGS_REPO="$REPO/claude/settings.json"
+SETTINGS_LIVE="$HOME/.claude/settings.json"
+# The last version of this machine's settings already in the repo: the base
+# for merging a change made here with one that came from the other machine.
+SETTINGS_SEEN="$HOME/.claude/.hangar-settings-seen"
+apply_settings() { cp "$SETTINGS_REPO" "$SETTINGS_LIVE"; cp "$SETTINGS_REPO" "$SETTINGS_SEEN"; }
+
+if [ -t 1 ]; then G=$'\e[32m' Y=$'\e[33m' R=$'\e[31m' D=$'\e[2m' N=$'\e[0m'; else G= Y= R= D= N=; fi
+ok()   { printf '  %sok%s    %s\n' "$G" "$N" "$*"; }
+warn() { printf '  %swarn%s  %s\n' "$Y" "$N" "$*"; WARNED=1; }
+bad()  { printf '  %sfail%s  %s\n' "$R" "$N" "$*"; FAILED=1; }
+say()  { printf '%s\n' "$*"; }
+WARNED=0 FAILED=0
+
+is_wsl() { grep -qi microsoft /proc/version 2>/dev/null; }
+
+ini_get() { # ini_get <section> <key> <file>: value of key inside [section]
+  tr -d '\r' < "$3" | awk -v sec="$1" -v key="$2" '
+    /^[ \t]*\[/ { gsub(/[][ \t]/, ""); cur = $0; next }
+    cur == sec {
+      line = $0; sub(/[#;].*/, "", line)
+      n = index(line, "="); if (!n) next
+      k = substr(line, 1, n - 1); v = substr(line, n + 1)
+      gsub(/^[ \t]+|[ \t]+$/, "", k); gsub(/^[ \t]+|[ \t]+$/, "", v)
+      if (k == key) { print v; exit }
+    }'
+}
+
+BACKUP_DIR=
+backup() { # move a path aside before replacing it; one folder per run
+  local src="$1" dest
+  if [ -z "$BACKUP_DIR" ]; then
+    mkdir -p "$BACKUP_ROOT"
+    BACKUP_DIR="$(mktemp -d "$BACKUP_ROOT/$(date +%Y%m%d-%H%M%S)-XXXX")"
+  fi
+  dest="$BACKUP_DIR${src#"$HOME"}"
+  mkdir -p "$(dirname "$dest")"
+  mv "$src" "$dest"
+  say "  ${D}moved old $src to $dest${N}"
+}
+
+# ── setup ─────────────────────────────────────────────────────────────────────
+cmd_setup() {
+  say "Linking config into place"
+  local line rel target src
+  while IFS='|' read -r rel target; do
+    [ -n "$rel" ] || continue
+    src="$REPO/$rel"
+    if [ -L "$target" ] && [ "$(readlink "$target")" = "$src" ]; then
+      ok "$target"; continue
+    fi
+    mkdir -p "$(dirname "$target")"
+    if [ -e "$target" ] || [ -L "$target" ]; then backup "$target"; fi
+    ln -s "$src" "$target"
+    ok "$target -> $src"
+  done <<< "$LINKS"
+
+  say "Claude settings"
+  if [ -L "$SETTINGS_LIVE" ]; then backup "$SETTINGS_LIVE"; fi
+  if [ -f "$SETTINGS_LIVE" ] && ! cmp -s "$SETTINGS_LIVE" "$SETTINGS_REPO"; then
+    backup "$SETTINGS_LIVE"
+  fi
+  apply_settings
+  ok "$SETTINGS_LIVE matches the repo"
+
+  say "Skill dependencies"
+  local pkg dir
+  for pkg in "$REPO"/skills/*/package.json; do
+    [ -f "$pkg" ] || continue
+    dir="$(dirname "$pkg")"
+    if [ -f "$dir/node_modules/.hangar-installed" ]; then ok "$(basename "$dir")"; continue; fi
+    if ! command -v npm >/dev/null; then
+      warn "$(basename "$dir") needs npm; install Node, then run 'hangar setup' again"
+    elif (cd "$dir" && npm ci --silent --no-audit --no-fund); then
+      touch "$dir/node_modules/.hangar-installed"   # marks a complete install
+      ok "$(basename "$dir") installed"
+    else
+      bad "$(basename "$dir"): npm ci failed"
+    fi
+  done
+  if [ "$FAILED" = 1 ]; then say "${R}Setup finished with errors.${N}"; exit 1; fi
+  say "Done. Run 'hangar doctor' to check the whole machine."
+}
+
+# ── sync ──────────────────────────────────────────────────────────────────────
+cmd_sync() {
+  if [ ! -L "$HOME/.claude/CLAUDE.md" ]; then
+    say "This machine isn't set up yet. Run 'hangar setup' first."; exit 1
+  fi
+  cd "$REPO"
+  if [ -d .git/rebase-merge ] || [ -d .git/rebase-apply ]; then
+    say "A conflict from the last sync is still open. Fix it in $REPO, run 'git rebase --continue', then sync again."; exit 1
+  fi
+  if [ -L "$SETTINGS_LIVE" ] || [ ! -f "$SETTINGS_LIVE" ]; then
+    say "$SETTINGS_LIVE should be a plain file. Run 'hangar setup' first."; exit 1
+  fi
+  # 1. bring this machine's settings changes into the repo, if it made any
+  if [ ! -f "$SETTINGS_SEEN" ]; then
+    if cmp -s "$SETTINGS_LIVE" "$SETTINGS_REPO"; then cp "$SETTINGS_REPO" "$SETTINGS_SEEN"
+    else
+      say "$SETTINGS_LIVE and the repo's copy differ, and there's no record of which is newer."
+      say "Keep the repo's:  hangar setup   (this machine's copy is backed up)"
+      say "Keep this one's:  cp $SETTINGS_LIVE $SETTINGS_REPO   then sync again"
+      exit 1
+    fi
+  fi
+  local captured; captured="$(mktemp)"; cp "$SETTINGS_LIVE" "$captured"
+  if ! cmp -s "$captured" "$SETTINGS_SEEN"; then
+    merge_settings "$captured" || exit 1
+  fi
+  # 2. commit whatever changed here
+  git add -A
+  if ! git diff --cached --quiet; then
+    if ! git commit -q -m "sync from $(hostname -s 2>/dev/null || hostname)"; then
+      say "${R}Commit failed.${N} Your changes are staged in $REPO; fix the error above and sync again."; exit 1
+    fi
+    say "Committed local changes:"
+    git show --stat --format= HEAD | sed 's/^/  /'
+  else
+    say "No local changes."
+  fi
+  # 3. merge the other machine's changes
+  if git remote get-url origin >/dev/null 2>&1; then
+    if ! git pull -q --rebase; then
+      say "${R}The two machines changed the same lines.${N} Fix the conflicts in $REPO,"
+      say "then run 'git rebase --continue' and 'hangar sync' again."; exit 1
+    fi
+    if ! git push -q; then say "${R}Push failed.${N} Nothing was lost; fix the error above and sync again."; exit 1; fi
+    say "Pushed to $(git remote get-url origin)."
+  else
+    warn "no remote yet; changes are committed here only"
+  fi
+  # 4. apply the merged settings back, unless Claude Code changed them meanwhile
+  if ! cmp -s "$SETTINGS_LIVE" "$captured"; then
+    warn "Claude Code changed settings during the sync; kept them. Run 'hangar sync' again to merge."
+    rm -f "$captured"; exit 1
+  fi
+  rm -f "$captured"
+  apply_settings
+  say "Up to date."
+}
+
+# Three-way merge of this machine's settings into the repo's copy, based on the
+# last version already in the repo from here. Stops if the same lines changed.
+merge_settings() {
+  local live="$1" merged; merged="$(mktemp)"
+  if git merge-file -p "$live" "$SETTINGS_SEEN" "$SETTINGS_REPO" > "$merged"; then
+    cp "$merged" "$SETTINGS_REPO"; rm -f "$merged"
+    cp "$live" "$SETTINGS_SEEN"   # this machine's change is in the repo now
+  else
+    rm -f "$merged"
+    say "${R}Settings changed in the same place here and in the repo.${N} Nothing was overwritten."
+    say "Edit $SETTINGS_REPO to the version you want, copy it to $SETTINGS_LIVE, then sync again."
+    say "  ${D}this machine: $SETTINGS_LIVE   last agreed: $SETTINGS_SEEN${N}"
+    return 1
+  fi
+}
+
+# ── doctor ────────────────────────────────────────────────────────────────────
+cmd_doctor() {
+  say "Repo $REPO"
+  cd "$REPO"
+  if [ -n "$(git status --porcelain)" ]; then warn "uncommitted changes; run 'hangar sync'"; else ok "clean"; fi
+  if git remote get-url origin >/dev/null 2>&1; then
+    git fetch -q 2>/dev/null || warn "couldn't reach $(git remote get-url origin)"
+    local ab; ab="$(git rev-list --left-right --count HEAD...@{u} 2>/dev/null || echo '? ?')"
+    set -- $ab
+    if [ "$1" = 0 ] && [ "$2" = 0 ]; then ok "in step with origin"
+    else warn "$1 commit(s) to push, $2 to pull; run 'hangar sync'"; fi
+  else
+    warn "no remote; the other machine can't get these changes"
+  fi
+
+  say "Links"
+  local rel target
+  while IFS='|' read -r rel target; do
+    [ -n "$rel" ] || continue
+    if [ -L "$target" ] && [ "$(readlink "$target")" = "$REPO/$rel" ]; then ok "$target"
+    elif [ -e "$target" ]; then bad "$target is a plain file; run 'hangar setup'"
+    else bad "$target missing; run 'hangar setup'"; fi
+  done <<< "$LINKS"
+  if [ -L "$SETTINGS_LIVE" ]; then bad "$SETTINGS_LIVE is a symlink; run 'hangar setup'"
+  elif cmp -s "$SETTINGS_LIVE" "$SETTINGS_REPO" 2>/dev/null; then ok "$SETTINGS_LIVE matches the repo"
+  else warn "$SETTINGS_LIVE differs from the repo; run 'hangar sync'"; fi
+
+  say "Tools T3 Code can see (login shell PATH)"
+  local tool p
+  for tool in git node npm claude codex t3 jq gh; do
+    p="$(sh -lc "command -v $tool" 2>/dev/null || true)"
+    if [ -n "$p" ]; then ok "$tool  ${D}$p${N}"
+    elif [ "$tool" = codex ]; then warn "codex not on PATH; fine if you use 'Connect with ChatGPT' in T3"
+    elif [ "$tool" = t3 ] && [ "$OS" = Darwin ]; then ok "t3  ${D}not needed here; the desktop app runs the server${N}"
+    elif [ "$tool" = node ] && command -v node >/dev/null; then
+      bad "node only works in interactive shells; move your version manager's lines from ~/.bashrc to ~/.profile"
+    else bad "$tool not found"; fi
+  done
+
+  say "Skill dependencies"
+  local pkg
+  for pkg in "$REPO"/skills/*/package.json; do
+    [ -f "$pkg" ] || continue
+    if [ -f "$(dirname "$pkg")/node_modules/.hangar-installed" ]; then ok "$(basename "$(dirname "$pkg")")"
+    else bad "$(basename "$(dirname "$pkg")") dependencies not installed; run 'hangar setup'"; fi
+  done
+
+  if [ "$OS" = Linux ]; then
+    say "T3 Code server"
+    if [ "$(ps -p 1 -o comm= 2>/dev/null)" = systemd ]; then ok "systemd running"
+    else bad "systemd off; add [boot] systemd=true to /etc/wsl.conf, then 'wsl --shutdown'"; fi
+    if sh -lc 'command -v t3' >/dev/null 2>&1; then
+      # `t3 service status` exits 0 even when stopped, so ask systemd
+      if systemctl --user is-active --quiet t3code.service 2>/dev/null; then ok "background service running"
+      else bad "background service not running; run 't3 service status' for the reason"; fi
+      if sh -lc 't3 browser setup' 2>&1 | grep -q 'is allowed here'; then ok "browser ready for screenshots"
+      else warn "browser may need setup; run 'sudo t3 browser setup'"; fi
+    else
+      bad "t3 not installed; run 'hangar install'"
+    fi
+    if is_wsl; then
+      say "WSL"
+      local winhome cfg
+      winhome="$(wslpath "$(cmd.exe /c 'echo %USERPROFILE%' 2>/dev/null | tr -d '\r')" 2>/dev/null || true)"
+      cfg="$winhome/.wslconfig"
+      if [ -f "$cfg" ]; then
+        local idle mem
+        idle="$(ini_get general instanceIdleTimeout "$cfg")"
+        mem="$(ini_get wsl2 memory "$cfg")"
+        if [ "$idle" = -1 ]; then ok "Ubuntu stays up when idle"
+        else bad "set 'instanceIdleTimeout=-1' under [general] in $cfg, or Ubuntu stops when idle"; fi
+        if [ -n "$mem" ]; then ok "memory capped at $mem"
+        else warn "no 'memory=' under [wsl2] in $cfg; games may run short of RAM"; fi
+      else
+        bad "no $cfg; see README for the settings"
+      fi
+    fi
+  fi
+
+  say ""
+  if [ "$FAILED" = 1 ]; then say "${R}Some checks failed.${N}"; exit 1
+  elif [ "$WARNED" = 1 ]; then say "${Y}Working, with warnings.${N}"
+  else say "${G}All good.${N}"; fi
+}
+
+# ── update ────────────────────────────────────────────────────────────────────
+cmd_update() {
+  say "Claude Code"
+  if ! command -v claude >/dev/null; then say "  skipped (not installed)"
+  elif ! claude update; then warn "claude update failed"; fi
+  say "Codex"
+  if ! command -v codex >/dev/null; then say "  skipped (not installed)"
+  elif ! codex update 2>/dev/null; then warn "codex update failed; rerun its installer"; fi
+  say "Skills from the skills installer"
+  (cd "$HOME" && npx -y skills update -g -y) || warn "skills update failed"
+  say "T3 Code (asks before restarting, since that interrupts running agents)"
+  if ! command -v t3 >/dev/null; then say "  skipped (no t3 command here)"
+  elif ! t3 update; then warn "t3 update failed"; fi
+  cd "$REPO"
+  if [ -n "$(git status --porcelain skills)" ]; then
+    say ""; say "Skill updates changed these files. Review with 'git -C $REPO diff', then 'hangar sync':"
+    git status --short skills | sed 's/^/  /'
+  fi
+}
+
+# ── install (Linux only) ──────────────────────────────────────────────────────
+cmd_install() {
+  [ "$OS" = Linux ] || { say "'install' sets up a fresh Linux server. On the Mac use 'setup'."; exit 1; }
+  export PATH="$HOME/.local/bin:$PATH"
+  say "System packages"
+  sudo apt-get update -q && sudo apt-get install -y -q build-essential python3 git curl unzip jq gh
+  say "Claude Code"
+  command -v claude >/dev/null || curl -fsSL https://claude.ai/install.sh | bash
+  say "Codex"
+  command -v codex >/dev/null || curl -fsSL https://chatgpt.com/codex/install.sh | sh
+  say "T3 Code ($T3_CHANNEL)"
+  command -v t3 >/dev/null || curl -fsSL https://t3.codes/install.sh | T3CODE_CHANNEL="$T3_CHANNEL" sh
+  sudo env "PATH=$PATH" t3 browser setup || warn "browser setup failed; run 'sudo t3 browser setup' and read its message"
+  t3 service install || warn "background service didn't start; is systemd on? ('hangar doctor' checks)"
+  command -v node >/dev/null || warn "no Node yet: install it, and if you use nvm, put its lines in ~/.profile"
+  say ""
+  say "Next, by hand:"
+  say "  claude        sign in, then /exit"
+  say "  codex login   (or use 'Connect with ChatGPT' in T3 instead)"
+  say "  t3 connect    link this machine to your T3 account"
+  say "  hangar setup && hangar doctor"
+}
+
+cmd_help() {
+  cat <<EOF
+hangar: keep this machine's agent setup in step with $REPO
+
+  setup     link skills, instructions and Claude config into place; install skill dependencies
+  sync      commit this machine's changes, pull the other machine's, push, apply
+  doctor    check links, PATH, T3 service, browser and WSL settings
+  update    update Claude Code, Codex, installed skills and T3 Code
+  install   Linux only: install system packages, Claude Code, Codex and T3 Code
+EOF
+}
+
+case "${1:-help}" in
+  setup) cmd_setup ;; sync) cmd_sync ;; doctor) cmd_doctor ;;
+  update) cmd_update ;; install) cmd_install ;; *) cmd_help ;;
+esac
