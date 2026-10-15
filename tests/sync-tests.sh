@@ -72,7 +72,7 @@ echo y >> $A/.agents/skills/coordinate/SKILL.md; run $A; rc=$?
 rm $A/.agents/.git/hooks/pre-commit
 
 # 9 .wslconfig parsing
-eval "$(sed -n '/^ini_get()/,/^}/p' $SRC/bin/hangar)"
+set -o pipefail; eval "$(sed -n '/^ini_get()/,/^}/p' $SRC/bin/hangar)"   # pipefail as in bin/hangar
 printf '[wsl2]\r\nmemory = 16GB # cap\r\nprocessors=8\r\n[general]\r\ninstanceIdleTimeout=-1\r\n' > $T/good.ini
 printf '[general]\nmemory=16GB\ninstanceIdleTimeout=-10\n[wsl2]\nprocessors=8\n' > $T/bad.ini
 [ "$(ini_get general instanceIdleTimeout $T/good.ini)|$(ini_get wsl2 memory $T/good.ini)" = "-1|16GB" ] && pass "9a CRLF file with comments parses" || fail "9a"

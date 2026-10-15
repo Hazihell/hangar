@@ -45,8 +45,9 @@ ini_get() { # ini_get <section> <key> <file>: value of key inside [section]
       n = index(line, "="); if (!n) next
       k = substr(line, 1, n - 1); v = substr(line, n + 1)
       gsub(/^[ \t]+|[ \t]+$/, "", k); gsub(/^[ \t]+|[ \t]+$/, "", v)
-      if (k == key) { print v; exit }
-    }'
+      if (k == key && !found) { val = v; found = 1 }   # read on: an early exit breaks the pipe under pipefail
+    }
+    END { if (found) print val }'
 }
 
 BACKUP_DIR=
