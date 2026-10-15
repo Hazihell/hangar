@@ -242,7 +242,7 @@ cmd_doctor() {
     if is_wsl; then
       say "WSL"
       local winhome cfg
-      winhome="$(wslpath "$(cmd.exe /c 'echo %USERPROFILE%' 2>/dev/null | tr -d '\r')" 2>/dev/null || true)"
+      winhome="$(wslpath "$(/mnt/c/Windows/System32/cmd.exe /c 'echo %USERPROFILE%' 2>/dev/null | tr -d '\r')" 2>/dev/null || true)"
       cfg="$winhome/.wslconfig"
       if [ -f "$cfg" ]; then
         local idle mem
