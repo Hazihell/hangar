@@ -1,0 +1,11 @@
+Processes: 456 total, 2 running, 454 sleeping, 2345 threads
+2026/10/16 09:30:00
+Load Avg: 1.25, 1.41, 1.50
+CPU usage: 8.00% user, 4.00% sys, 88.00% idle
+SharedLibs: 512M resident, 100M data, 80M linkedit.
+PhysMem: 12G used (1600M wired, 800M compressor), 4G unused.
+Processes: 456 total, 3 running, 453 sleeping, 2347 threads
+2026/10/16 09:30:10
+Load Avg: 1.35, 1.43, 1.50
+CPU usage: 15.25% user, 5.50% sys, 79.25% idle
+SharedLibs: 512M resident, 100M data, 80M linkedit.

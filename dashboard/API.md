@@ -37,7 +37,7 @@ The server listens on `127.0.0.1:4318` (override with `HANGAR_DASHBOARD_PORT`). 
 ```
 
 - `cpu`: percent, 0–100, whole machine, averaged since the previous report.
-- `ram.used`: bytes, total minus available (cache doesn't count).
+- `ram.used`: bytes, total minus available (cache doesn't count). macOS has no "available" figure, so the Mac sends Activity Monitor's "Memory Used": app memory + wired + compressed.
 - `disks`: every fixed drive; `used` and `total` in bytes.
 - `services`: optional. The PC reports `t3`, whether the T3 service is running.
 
@@ -73,6 +73,6 @@ Responses: `204` accepted; `400` malformed; `404` Machine not in the list.
 
 ## `GET /api/events`
 
-Server-sent events. Each event is named `machine`, and its data is one Machine in the same shape as above, except that `history` is replaced by `minute`: the current minute's running average, `{ t, cpu, ram, disk }`. The page replaces its last History point when `t` matches, otherwise appends it and drops points older than 24 h.
+Server-sent events. Each event is named `machine`, and its data is one Machine in the same shape as above, except that `history` is replaced by `minute`: the current minute's running average, `{ t, cpu, ram, disk }`. The page replaces its last History point when `t` matches, otherwise appends it and drops points older than 24 h. `minute` is `null` when the current minute has no reports yet (as when a Machine turns Offline); the page then leaves History alone.
 
 The server sends an event on every report, and when a Machine turns Offline.
