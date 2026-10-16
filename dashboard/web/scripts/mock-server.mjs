@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// Dev stand-in for dashboard/server: GET /api/machines and GET /api/events per
-// dashboard/API.md, with fake Usage. No dependencies.
+// Dev stand-in for dashboard/server: GET /api/machines, GET /api/events and
+// POST /api/machines/:id/vpns/:name per dashboard/API.md, with fake Usage and
+// VPNs. No dependencies.
 //
 //   node scripts/mock-server.mjs [port] [--extra] [--calm]
 //
@@ -9,6 +10,10 @@
 // one that never reported and one with many drives.
 // --calm (or MOCK_CALM=1) is the all-is-well case: both Machines Online, no
 // drive nearly full.
+//
+// VPN commands take MOCK_VPN_MS (default 4 s); connecting "Office" always fails,
+// so the error state can be seen. The MacBook is Offline unless --calm, so its
+// VPNs only take commands with --calm.
 
 import { createServer } from "node:http"
 
@@ -21,6 +26,7 @@ const port = Number(
 )
 const extra = args.includes("--extra") || process.env.MOCK_EXTRA === "1"
 const calm = args.includes("--calm") || process.env.MOCK_CALM === "1"
+const vpnMs = Number(process.env.MOCK_VPN_MS ?? 4_000)
 
 const GB = 1024 ** 3
 const MINUTE = 60_000
@@ -32,6 +38,7 @@ const round1 = (n) => Math.round(n * 10) / 10
 const clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, n))
 const minuteStart = (ms) => Math.floor(ms / MINUTE) * MINUTE
 const iso = (ms) => new Date(ms).toISOString()
+const vpn = (name, status) => ({ name, status, pending: null, error: null })
 
 // Deterministic noise so reloads show the same History.
 function noise(seed) {
@@ -86,6 +93,7 @@ function makeMachines(now) {
         disks,
         services: { t3: true },
       },
+      vpns: [vpn("Steeprock", "connected")],
       history,
       live: true,
     })
@@ -116,6 +124,7 @@ function makeMachines(now) {
         ram: { used: Math.round((last.ram / 100) * ramTotal), total: ramTotal },
         disks: [{ name: "Macintosh HD", used: Math.round(0.612 * 460.4 * GB), total: Math.round(460.4 * GB) }],
       },
+      vpns: [vpn("Steeprock", "connected"), vpn("Office", "disconnected")],
       history,
       rand,
       ramPct: last.ram,
@@ -130,6 +139,7 @@ function makeMachines(now) {
       os: "linux",
       lastSeenMs: null,
       usage: null,
+      vpns: [],
       history: [],
       live: false,
     })
@@ -159,6 +169,7 @@ function makeMachines(now) {
         ],
         services: { t3: false },
       },
+      vpns: [],
       history,
       live: true,
     })
@@ -174,9 +185,10 @@ function view(m, now) {
     id: m.id,
     name: m.name,
     os: m.os,
-    online: m.lastSeenMs !== null && now - m.lastSeenMs < ONLINE_WINDOW,
+    online: isOnline(m, now),
     lastSeen: m.lastSeenMs === null ? null : iso(m.lastSeenMs),
     usage: m.usage,
+    vpns: m.vpns.map((v) => ({ ...v })),
   }
 }
 
@@ -216,6 +228,32 @@ function broadcast(machine) {
   for (const res of clients) res.write(frame)
 }
 
+const isOnline = (m, now) => m.lastSeenMs !== null && now - m.lastSeenMs < ONLINE_WINDOW
+
+// A VPN command, as the server runs one: pending at once, the operating system
+// reporting the transition a moment later, then done (or failed).
+function runVpnCommand(m, v, action) {
+  v.pending = { action, since: iso(Date.now()) }
+  v.error = null
+  broadcast({ ...view(m, Date.now()), minute: null })
+
+  setTimeout(() => {
+    v.status = action === "connect" ? "connecting" : "disconnecting"
+    broadcast({ ...view(m, Date.now()), minute: null })
+  }, Math.min(1_500, vpnMs / 2))
+
+  setTimeout(() => {
+    if (action === "connect" && v.name === "Office") {
+      v.status = "disconnected"
+      v.error = { message: "L2TP: incorrect user shared secret found.", at: iso(Date.now()) }
+    } else {
+      v.status = action === "connect" ? "connected" : "disconnected"
+    }
+    v.pending = null
+    broadcast({ ...view(m, Date.now()), minute: null })
+  }, vpnMs)
+}
+
 setInterval(() => {
   const now = Date.now()
   for (const m of machines) if (m.live) broadcast(report(m, now))
@@ -235,6 +273,38 @@ const server = createServer((req, res) => {
     }
     res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" })
     res.end(JSON.stringify(body))
+    return
+  }
+
+  const vpnPath = url.pathname.match(/^\/api\/machines\/([^/]+)\/vpns\/([^/]+)$/)
+  if (req.method === "POST" && vpnPath) {
+    // Like the real server: the body must be declared JSON.
+    if (!/^application\/(?:[\w.+-]+\+)?json(?:\s*;|$)/i.test(req.headers["content-type"] ?? "")) {
+      res.writeHead(400).end()
+      req.resume()
+      return
+    }
+    let body = ""
+    req.on("data", (chunk) => (body += chunk))
+    req.on("end", () => {
+      const reply = (status, text = "") => {
+        res.writeHead(status, { "content-type": "text/plain" })
+        res.end(text)
+      }
+      let action
+      try {
+        action = JSON.parse(body)?.action
+      } catch {
+        return reply(400)
+      }
+      if (action !== "connect" && action !== "disconnect") return reply(400)
+      const m = machines.find((x) => x.id === decodeURIComponent(vpnPath[1]))
+      const v = m?.vpns.find((x) => x.name === decodeURIComponent(vpnPath[2]))
+      if (!m || !v) return reply(404)
+      if (!isOnline(m, Date.now()) || v.pending) return reply(409)
+      runVpnCommand(m, v, action)
+      reply(202)
+    })
     return
   }
 

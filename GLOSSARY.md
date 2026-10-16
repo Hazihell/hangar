@@ -26,10 +26,14 @@ When an Offline Machine last reported its Usage.
 **History**:
 A Machine's Usage over the last 24 hours.
 
+**VPN**:
+A VPN connection a Machine's operating system manages, such as Steeprock: Connected, Disconnected, or on its way between them. Tailscale doesn't count: the Dashboard reaches Machines through it, so disconnecting it from there would cut the Dashboard off.
+_Avoid_: tunnel, network
+
 **Dashboard**:
-The page that shows every Machine: Online or Offline, its current Usage and its History.
+The page that shows every Machine: Online or Offline, its current Usage, its History and its VPNs, which it can also connect and disconnect.
 _Avoid_: monitor, status page
 
 **Alert**:
-A browser push notification about a Machine, for example when it goes Offline or its disk fills. Planned as a follow-up; the Dashboard only displays for now.
+A browser push notification about a Machine, for example when it goes Offline or its disk fills. A VPN dropping is another candidate. Planned as a follow-up.
 _Avoid_: alarm, warning

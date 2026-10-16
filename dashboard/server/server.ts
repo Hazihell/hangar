@@ -1,3 +1,6 @@
+import { execFile } from 'node:child_process';
+import { vpnCommand, commandError } from './vpn.ts';
+import type { Action, Exec } from './vpn.ts';
 import { createServer } from 'node:http';
 import type { ServerResponse } from 'node:http';
 import { readFileSync, realpathSync, statSync } from 'node:fs';
@@ -9,14 +12,35 @@ import type { Machine } from './store.ts';
 import { validReport } from './rules.ts';
 import { startCollector } from './collector.ts';
 const root = fileURLToPath(new URL('..', import.meta.url));
-export function createDashboard(options: { db: string; machines?: Machine[]; clock?: () => number; collect?: boolean; dist?: string }) {
+export function createDashboard(options: { db: string; machines?: Machine[]; clock?: () => number; collect?: boolean; dist?: string; exec?: Exec }) {
   const machines = options.machines ?? JSON.parse(readFileSync(resolve(root, 'machines.json'), 'utf8'));
   const store = new Store(options.db, machines), clock = options.clock ?? Date.now;
   const streams = new Set<ServerResponse>(), statuses = new Map<string, boolean>();
+  const exec = options.exec ?? execFile;
+  type Command = { action: Action; pending: { action: Action; since: string } | null; error: { message: string; at: string } | null };
+  const timers = new Map<Command, ReturnType<typeof setTimeout>>();
+  const commands = new Map<string, Map<string, Command>>();
+  let closed = false;
+  function clearPending(command: Command) {
+    clearTimeout(timers.get(command)); timers.delete(command); command.pending = null;
+  }
+  function expire(command: Command, now: number) {
+    if (!command.pending || now - Date.parse(command.pending.since) < 90_000) return false;
+    clearPending(command); command.error = { message: 'No change after 90 s', at: new Date(now).toISOString() };
+    return true;
+  }
+  function state(machine: Machine, now: number, event = false) {
+    const value = event ? store.event(machine, now) : store.snapshot(machine, now);
+    value.vpns = value.vpns.map((vpn: any) => {
+      const command = commands.get(machine.id)?.get(vpn.name);
+      return command ? { ...vpn, pending: command.pending, error: command.error } : vpn;
+    });
+    return value;
+  }
   const dist = options.dist ?? resolve(root, 'web/dist');
   for (const m of machines) statuses.set(m.id, store.snapshot(m, clock()).online);
   function emit(machine: Machine, now: number) {
-    const event = store.event(machine, now);
+    const event = state(machine, now, true);
     statuses.set(machine.id, event.online);
     for (const stream of streams) stream.write(`event: machine\ndata: ${JSON.stringify(event)}\n\n`);
   }
@@ -26,9 +50,17 @@ export function createDashboard(options: { db: string; machines?: Machine[]; clo
     if (!m) return 404;
     const report = { machine: value.machine, cpu: value.cpu, ram: { used: value.ram.used, total: value.ram.total },
       disks: value.disks.map(d => ({ name: d.name, used: d.used, total: d.total })),
-      ...(value.services === undefined ? {} : { services: value.services }) };
+      ...(value.services === undefined ? {} : { services: value.services }),
+      ...(value.vpns === undefined ? {} : { vpns: value.vpns.map(v => ({ name: v.name, status: v.status, kind: v.kind })) }) };
     const now = clock();
     try { store.intake(report, now); } catch (error) { console.error('Dashboard intake:', error); return 500; }
+    if (value.vpns !== undefined) {
+      for (const [name, command] of commands.get(m.id) ?? []) {
+        const vpn = value.vpns.find(v => v.name === name);
+        if (!vpn) { clearPending(command); commands.get(m.id)!.delete(name); }
+        else if (vpn.status === (command.action === 'connect' ? 'connected' : 'disconnected')) { clearPending(command); command.error = null; }
+      }
+    }
     emit(m, now); return 204;
   }
   const server = createServer(async (req, res) => {
@@ -40,10 +72,38 @@ export function createDashboard(options: { db: string; machines?: Machine[]; clo
         let value; try { value = JSON.parse(body); } catch { res.writeHead(400).end(); return; }
         res.writeHead(intake(value)).end(); return;
       }
+      const vpnPath = path.match(/^\/api\/machines\/([^/]+)\/vpns\/([^/]+)$/);
+      if (req.method === 'POST' && vpnPath) {
+        let id, name;
+        try { id = decodeURIComponent(vpnPath[1]); name = decodeURIComponent(vpnPath[2]); } catch { res.writeHead(400).end(); return; }
+        if (!/^application\/(?:[\w.+-]+\+)?json(?:\s*;|$)/i.test(req.headers['content-type'] ?? '')) { res.writeHead(400).end(); return; }
+        let body = '', size = 0;
+        for await (const chunk of req) { size += chunk.length; if (size > 4096) { res.writeHead(400).end(); return; } body += chunk; }
+        let value; try { value = JSON.parse(body); } catch { res.writeHead(400).end(); return; }
+        if (!value || !['connect', 'disconnect'].includes(value.action)) { res.writeHead(400).end(); return; }
+        const machine = machines.find((m: Machine) => m.id === id), vpn = store.vpns(id).find(v => v.name === name);
+        if (!machine || !vpn) { res.writeHead(404).end(); return; }
+        const command = vpnCommand(machine, vpn, value.action);
+        if (!command) { res.writeHead(404).end('no way to reach this Machine'); return; }
+        const now = clock();
+        if (!store.snapshot(machine, now).online || commands.get(id)?.get(name)?.pending) { res.writeHead(409).end(); return; }
+        const current: Command = { action: value.action, pending: { action: value.action, since: new Date(now).toISOString() }, error: null };
+        if (!commands.has(id)) commands.set(id, new Map());
+        commands.get(id)!.set(name, current);
+        timers.set(current, setTimeout(() => { if (expire(current, now + 90_000)) emit(machine, clock()); }, 90_000));
+        emit(machine, now);
+        const done = (error: any, stdout: string, stderr: string) => {
+          if (closed || commands.get(id)?.get(name) !== current || !current.pending || !error) return;
+          clearPending(current); current.error = { message: commandError(error, stdout, stderr), at: new Date(clock()).toISOString() };
+          emit(machine, clock());
+        };
+        try { exec(command.file, command.args, { timeout: command.timeout, encoding: 'utf8' }, done); } catch (error) { done(error, '', ''); }
+        res.writeHead(202).end(); return;
+      }
       const read = req.method === 'GET' || req.method === 'HEAD'; // node sends no body for HEAD
       if (read && path === '/api/machines') {
         const now = clock(); store.prune(now);
-        res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ now: new Date(now).toISOString(), machines: machines.map((m: Machine) => store.snapshot(m, now)) })); return;
+        res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ now: new Date(now).toISOString(), machines: machines.map((m: Machine) => state(m, now)) })); return;
       }
       if (req.method === 'GET' && path === '/api/events') {
         res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
@@ -66,12 +126,19 @@ export function createDashboard(options: { db: string; machines?: Machine[]; clo
   });
   function tick() {
     const now = clock(); store.prune(now);
+    for (const m of machines) {
+      let changed = false;
+      for (const command of commands.get(m.id)?.values() ?? []) {
+        if (expire(command, now)) changed = true;
+      }
+      if (changed) emit(m, now);
+    }
     for (const m of machines) if (statuses.get(m.id) && !store.snapshot(m, now).online) emit(m, now);
   }
   const offline = setInterval(tick, 5000);
   const heartbeat = setInterval(() => { for (const stream of streams) stream.write(': heartbeat\n\n'); }, 20_000);
   const stops = options.collect === false ? [] : machines.filter((m: Machine) => m.collector === 'wsl').slice(0, 1).map((m: Machine) => startCollector(m.id, intake));
-  return { server, tick, async close() { clearInterval(offline); clearInterval(heartbeat); stops.forEach((stop: () => void) => stop()); for (const stream of streams) stream.end(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); store.close(); } };
+  return { server, tick, async close() { closed = true; for (const timer of timers.values()) clearTimeout(timer); timers.clear(); commands.clear(); clearInterval(offline); clearInterval(heartbeat); stops.forEach((stop: () => void) => stop()); for (const stream of streams) stream.end(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); store.close(); } };
 }
 function statExists(path: string) { try { statSync(path); return true; } catch { return false; } }
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

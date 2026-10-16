@@ -24,6 +24,9 @@ export function mergeEvent(machines: Machine[], event: MachineEvent, now: number
 
   const next: Machine = {
     ...fields,
+    // Events carry the full Machine, VPNs included; one without them (an older
+    // server) keeps what we had, while an explicit [] clears them.
+    vpns: fields.vpns ?? current?.vpns ?? [],
     history: minute
       ? withMinute(current?.history ?? [], minute, now)
       : (current?.history ?? []),

@@ -1,4 +1,5 @@
-export type Report = { machine: string; cpu: number; ram: { used: number; total: number }; disks: { name: string; used: number; total: number }[]; services?: Record<string, boolean> };
+export type Vpn = { name: string; status: 'connected' | 'disconnected' | 'connecting' | 'disconnecting'; kind: 'ppp' | 'other' };
+export type Report = { machine: string; cpu: number; ram: { used: number; total: number }; disks: { name: string; used: number; total: number }[]; services?: Record<string, boolean>; vpns?: Vpn[] };
 export type Point = { t: string; cpu: number; ram: number; disk: number };
 export const minute = (now: number) => Math.floor(now / 60_000) * 60_000;
 export const cutoff = (now: number) => now - 86_400_000;
@@ -9,7 +10,8 @@ const bytes = (v: unknown) => object(v) && finite(v.used) && finite(v.total) && 
 export function validReport(v: unknown): v is Report {
   return object(v) && typeof v.machine === 'string' && v.machine.length > 0 && finite(v.cpu) && v.cpu >= 0 && v.cpu <= 100 &&
     bytes(v.ram) && Array.isArray(v.disks) && v.disks.every(d => bytes(d) && typeof d.name === 'string' && d.name.length > 0) &&
-    (v.services === undefined || (object(v.services) && Object.values(v.services).every(x => typeof x === 'boolean')));
+    (v.services === undefined || (object(v.services) && Object.values(v.services).every(x => typeof x === 'boolean'))) &&
+    (v.vpns === undefined || (Array.isArray(v.vpns) && v.vpns.every(vpn => object(vpn) && typeof vpn.name === 'string' && vpn.name.length > 0 && vpn.name.length <= 256 && !/^[\/-]|["\x00-\x1f\x7f-\x9f]/.test(vpn.name) && ['connected', 'disconnected', 'connecting', 'disconnecting'].includes(vpn.status) && ['ppp', 'other'].includes(vpn.kind))));
 }
 export function percentages(report: Report) {
   return { cpu: report.cpu, ram: report.ram.used / report.ram.total * 100, disk: Math.max(0, ...report.disks.map(d => d.used / d.total * 100)) };

@@ -126,6 +126,20 @@
   }
 }
 
+@theme {
+  /* A pen at work: a VPN on its way between Connected and Disconnected. */
+  --animate-breathe: breathe 2.4s ease-in-out infinite;
+  @keyframes breathe {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.25;
+    }
+  }
+}
+
 @utility readings {
   /* Pen readings: semi-condensed, tabular so live numbers don't jitter. */
   font-stretch: 88%;
