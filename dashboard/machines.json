@@ -1,0 +1,4 @@
+[
+  { "id": "stormtrooper", "name": "Stormtrooper", "os": "windows", "collector": "wsl" },
+  { "id": "rogers-macbook-air", "name": "MacBook Air", "os": "macos", "collector": "mac" }
+]

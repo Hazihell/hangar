@@ -1,0 +1,337 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-16T04:24:53.221141+00:00",
+  "title": "Design System: Hangar Dashboard",
+  "extensions": {
+    "colorMeta": {
+      "ink-cpu": {
+        "role": "secondary",
+        "displayName": "CPU Blue",
+        "canonical": "oklch(0.5 0.17 266)",
+        "tonalRamp": [
+          "oklch(20% 0.15 266)",
+          "oklch(30% 0.15 266)",
+          "oklch(40% 0.15 266)",
+          "oklch(50% 0.15 266)",
+          "oklch(60% 0.15 266)",
+          "oklch(70% 0.15 266)",
+          "oklch(80% 0.15 266)",
+          "oklch(92% 0.15 266)"
+        ]
+      },
+      "ink-ram": {
+        "role": "secondary",
+        "displayName": "RAM Violet",
+        "canonical": "oklch(0.5 0.15 312)",
+        "tonalRamp": [
+          "oklch(20% 0.13 312)",
+          "oklch(30% 0.13 312)",
+          "oklch(40% 0.13 312)",
+          "oklch(50% 0.13 312)",
+          "oklch(60% 0.13 312)",
+          "oklch(70% 0.13 312)",
+          "oklch(80% 0.13 312)",
+          "oklch(92% 0.13 312)"
+        ]
+      },
+      "ink-disk": {
+        "role": "secondary",
+        "displayName": "Disk Teal-Green",
+        "canonical": "oklch(0.5 0.09 182)",
+        "tonalRamp": [
+          "oklch(20% 0.08 182)",
+          "oklch(30% 0.08 182)",
+          "oklch(40% 0.08 182)",
+          "oklch(50% 0.08 182)",
+          "oklch(60% 0.08 182)",
+          "oklch(70% 0.08 182)",
+          "oklch(80% 0.08 182)",
+          "oklch(92% 0.08 182)"
+        ]
+      },
+      "online-green": {
+        "role": "tertiary",
+        "displayName": "Online Green",
+        "canonical": "oklch(0.56 0.14 152)",
+        "tonalRamp": [
+          "oklch(20% 0.13 152)",
+          "oklch(30% 0.13 152)",
+          "oklch(40% 0.13 152)",
+          "oklch(50% 0.13 152)",
+          "oklch(60% 0.13 152)",
+          "oklch(70% 0.13 152)",
+          "oklch(80% 0.13 152)",
+          "oklch(92% 0.13 152)"
+        ]
+      },
+      "high-ochre": {
+        "role": "tertiary",
+        "displayName": "High Ochre",
+        "canonical": "oklch(0.53 0.12 68)",
+        "tonalRamp": [
+          "oklch(20% 0.12 68)",
+          "oklch(30% 0.12 68)",
+          "oklch(40% 0.12 68)",
+          "oklch(50% 0.12 68)",
+          "oklch(60% 0.12 68)",
+          "oklch(70% 0.12 68)",
+          "oklch(80% 0.12 68)",
+          "oklch(92% 0.12 68)"
+        ]
+      },
+      "full-red": {
+        "role": "tertiary",
+        "displayName": "Full Red",
+        "canonical": "oklch(0.54 0.2 27)",
+        "tonalRamp": [
+          "oklch(20% 0.18 27)",
+          "oklch(30% 0.18 27)",
+          "oklch(40% 0.18 27)",
+          "oklch(50% 0.18 27)",
+          "oklch(60% 0.18 27)",
+          "oklch(70% 0.18 27)",
+          "oklch(80% 0.18 27)",
+          "oklch(92% 0.18 27)"
+        ]
+      },
+      "chart-paper": {
+        "role": "neutral",
+        "displayName": "Chart Paper",
+        "canonical": "oklch(0.955 0.007 160)",
+        "tonalRamp": [
+          "oklch(20% 0.008 160)",
+          "oklch(30% 0.008 160)",
+          "oklch(40% 0.008 160)",
+          "oklch(50% 0.008 160)",
+          "oklch(60% 0.008 160)",
+          "oklch(70% 0.008 160)",
+          "oklch(80% 0.008 160)",
+          "oklch(92% 0.008 160)"
+        ]
+      },
+      "graphite": {
+        "role": "primary",
+        "displayName": "Graphite",
+        "canonical": "oklch(0.24 0.012 240)",
+        "tonalRamp": [
+          "oklch(20% 0.012 240)",
+          "oklch(30% 0.012 240)",
+          "oklch(40% 0.012 240)",
+          "oklch(50% 0.012 240)",
+          "oklch(60% 0.012 240)",
+          "oklch(70% 0.012 240)",
+          "oklch(80% 0.012 240)",
+          "oklch(92% 0.012 240)"
+        ]
+      },
+      "grid-ink": {
+        "role": "neutral",
+        "displayName": "Grid Ink",
+        "canonical": "oklch(0.885 0.03 160)",
+        "tonalRamp": [
+          "oklch(20% 0.03 160)",
+          "oklch(30% 0.03 160)",
+          "oklch(40% 0.03 160)",
+          "oklch(50% 0.03 160)",
+          "oklch(60% 0.03 160)",
+          "oklch(70% 0.03 160)",
+          "oklch(80% 0.03 160)",
+          "oklch(92% 0.03 160)"
+        ]
+      },
+      "hairline": {
+        "role": "neutral",
+        "displayName": "Hairline",
+        "canonical": "oklch(0.875 0.012 160)",
+        "tonalRamp": [
+          "oklch(20% 0.012 160)",
+          "oklch(30% 0.012 160)",
+          "oklch(40% 0.012 160)",
+          "oklch(50% 0.012 160)",
+          "oklch(60% 0.012 160)",
+          "oklch(70% 0.012 160)",
+          "oklch(80% 0.012 160)",
+          "oklch(92% 0.012 160)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "verdict": {
+        "displayName": "Verdict",
+        "purpose": "The one h1 sentence about the state of the Machines."
+      },
+      "machine-name": {
+        "displayName": "Machine name",
+        "purpose": "Sheet heading."
+      },
+      "reading": {
+        "displayName": "Reading",
+        "purpose": "Live percentages; 88% width, tabular."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Status and service lines."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Channel names and detail lines."
+      },
+      "axis": {
+        "displayName": "Axis",
+        "purpose": "Time ticks on the Disk trace."
+      }
+    },
+    "shadows": [
+      {
+        "name": "none-dark",
+        "value": "none",
+        "purpose": "Dark mode sheets have no shadow; the hairline ring carries the edge."
+      },
+      {
+        "name": "hairline-ring",
+        "value": "0 0 0 1px var(--border)",
+        "purpose": "Sheet edge (ring-1)."
+      }
+    ],
+    "motion": [
+      {
+        "name": "value-change",
+        "value": "200ms ease-out",
+        "purpose": "Meter width and sheet fill changes only."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "sm",
+        "value": "40rem"
+      },
+      {
+        "name": "sheet-column",
+        "value": "30rem min column width"
+      },
+      {
+        "name": "page-max",
+        "value": "78rem"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Online Sheet Head",
+      "kind": "card",
+      "refersTo": "sheet-online",
+      "description": "Machine name, OS, and pen-dot status line.",
+      "html": "<div class=\"ds-sheet\"><h2>Stormtrooper</h2><p class=\"ds-status\"><span class=\"ds-pen\"></span>Online</p></div>",
+      "css": ".ds-sheet{background:var(--card,oklch(0.993 0.003 160));color:oklch(0.24 0.012 240);border-radius:0.7rem;box-shadow:0 0 0 1px oklch(0.875 0.012 160);padding:20px 24px;font-family:'Archivo Variable',system-ui,sans-serif;width:320px}.ds-sheet h2{margin:0;font-size:1.25rem;font-weight:600;letter-spacing:-0.01em}.ds-status{display:flex;align-items:center;gap:8px;font-size:0.9375rem;margin:6px 0 0}.ds-pen{width:10px;height:10px;border-radius:50%;background:oklch(0.56 0.14 152)}.ds-pen.ds-lifted{background:transparent;border:1.5px solid oklch(0.48 0.014 220)}.ds-offline{background:transparent;color:oklch(0.48 0.014 220)}"
+    },
+    {
+      "name": "Offline Sheet Head",
+      "kind": "card",
+      "refersTo": "sheet-offline",
+      "description": "Transparent sheet with a lifted (hollow) pen and Last seen.",
+      "html": "<div class=\"ds-sheet ds-offline\"><h2>MacBook Air</h2><p class=\"ds-status\"><span class=\"ds-pen ds-lifted\"></span>Offline \u00b7 Last seen 2 hours ago</p></div>",
+      "css": ".ds-sheet{background:var(--card,oklch(0.993 0.003 160));color:oklch(0.24 0.012 240);border-radius:0.7rem;box-shadow:0 0 0 1px oklch(0.875 0.012 160);padding:20px 24px;font-family:'Archivo Variable',system-ui,sans-serif;width:320px}.ds-sheet h2{margin:0;font-size:1.25rem;font-weight:600;letter-spacing:-0.01em}.ds-status{display:flex;align-items:center;gap:8px;font-size:0.9375rem;margin:6px 0 0}.ds-pen{width:10px;height:10px;border-radius:50%;background:oklch(0.56 0.14 152)}.ds-pen.ds-lifted{background:transparent;border:1.5px solid oklch(0.48 0.014 220)}.ds-offline{background:transparent;color:oklch(0.48 0.014 220)}"
+    },
+    {
+      "name": "Reading",
+      "kind": "custom",
+      "refersTo": "reading-ok",
+      "description": "Channel label, big tabular percentage, detail line. Ochre from 80%, red from 90%.",
+      "html": "<div class=\"ds-reading\"><span class=\"ds-label\">Disk</span><span class=\"ds-value\">93 %</span><span class=\"ds-detail\">on D:</span><span class=\"ds-flag\">nearly full</span></div>",
+      "css": ".ds-reading{display:flex;flex-direction:column;font-family:'Archivo Variable',system-ui,sans-serif}.ds-label{font-size:0.8125rem;font-weight:500;color:oklch(0.48 0.014 220)}.ds-value{font-size:2rem;line-height:1.05;font-weight:600;font-stretch:88%;font-variant-numeric:tabular-nums;letter-spacing:-0.01em;color:oklch(0.54 0.2 27)}.ds-detail{font-size:0.8125rem;color:oklch(0.48 0.014 220)}.ds-flag{font-size:0.8125rem;font-weight:500;color:oklch(0.54 0.2 27)}"
+    },
+    {
+      "name": "Trace Paper",
+      "kind": "custom",
+      "refersTo": "drive-meter-track",
+      "description": "Chart-paper grid (3 h columns, 25% rows) with an ink line and a pen dot at the live end.",
+      "html": "<svg class=\"ds-trace\" viewBox=\"0 0 240 60\" width=\"240\" height=\"60\"><g class=\"ds-grid\"><path d=\"M0 5H240M0 20H240M0 35H240M0 50H240M60 0V60M120 0V60M180 0V60\"/></g><path class=\"ds-line\" d=\"M0 44 C40 42 60 30 100 34 S170 40 230 38\"/><circle class=\"ds-dot\" cx=\"230\" cy=\"38\" r=\"3.5\"/></svg>",
+      "css": ".ds-grid path{stroke:oklch(0.885 0.03 160);stroke-width:1;fill:none}.ds-line{stroke:oklch(0.5 0.17 266);stroke-width:1.5;fill:none}.ds-dot{fill:oklch(0.5 0.17 266)}"
+    },
+    {
+      "name": "Drive Row",
+      "kind": "custom",
+      "refersTo": "drive-meter-track",
+      "description": "Drive name, used of total and percentage above a 6px pill meter.",
+      "html": "<div class=\"ds-drive\"><div class=\"ds-drive-head\"><span>C:</span><span>588 of 930 GB <b>63 %</b></span></div><div class=\"ds-track\"><div class=\"ds-fill\"></div></div></div>",
+      "css": ".ds-drive{font-family:'Archivo Variable',system-ui,sans-serif;width:280px;font-size:0.875rem}.ds-drive-head{display:flex;justify-content:space-between;margin-bottom:6px;color:oklch(0.48 0.014 220)}.ds-drive-head span:first-child{font-weight:500;color:oklch(0.24 0.012 240)}.ds-drive-head b{margin-left:8px;color:oklch(0.24 0.012 240)}.ds-track{height:6px;border-radius:9999px;background:oklch(0.885 0.03 160);overflow:hidden}.ds-fill{width:63%;height:100%;background:oklch(0.5 0.09 182)}"
+    },
+    {
+      "name": "Service Row",
+      "kind": "custom",
+      "refersTo": "sheet-online",
+      "description": "T3 service state with dashed top rule.",
+      "html": "<div class=\"ds-service\"><span>T3 service</span><span class=\"ds-run\"><i></i>Running</span></div>",
+      "css": ".ds-service{display:flex;justify-content:space-between;align-items:center;border-top:1px dashed oklch(0.875 0.012 160);padding-top:16px;width:280px;font-family:'Archivo Variable',system-ui,sans-serif;font-size:0.9375rem}.ds-service span:first-child{font-weight:500}.ds-run{display:flex;align-items:center;gap:8px}.ds-run i{width:8px;height:8px;border-radius:50%;background:oklch(0.56 0.14 152)}"
+    },
+    {
+      "name": "Retry Button",
+      "kind": "button",
+      "refersTo": "button-outline",
+      "description": "Outline button, shown only when the server is unreachable.",
+      "html": "<button class=\"ds-btn\">Try again now</button>",
+      "css": ".ds-btn{height:36px;padding:0 10px;border-radius:0.5rem;border:1px solid oklch(0.875 0.012 160);background:transparent;color:oklch(0.24 0.012 240);font:500 0.875rem 'Archivo Variable',system-ui,sans-serif;cursor:pointer}.ds-btn:hover{background:oklch(0.93 0.01 160)}.ds-btn:focus-visible{outline:2px solid oklch(0.55 0.12 265);outline-offset:2px}.ds-btn:active{transform:translateY(1px)}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Chart Recorder",
+    "overview": "Every Machine is a sheet from a strip-chart recorder. The pen rests at the current reading, and the last 24 hours trace out behind it on chart paper whose grid is the real scale. The page answers 'is everything OK?' with a verdict sentence, then lets each sheet confirm it. Cool green-grey paper, graphite text, one pen ink per channel, one reserved red, ochre for high. Archivo only: normal width for words, 88% width tabular for readings.",
+    "keyCharacteristics": [
+      "Chart-paper ground, hairline-edged flat sheets, no glass, no gradients, no glow.",
+      "One pen ink per channel; one reserved red; one ochre.",
+      "State is always in words as well as color.",
+      "Big readings (2rem) beside their trace; labels small and grey.",
+      "The pen dot sits at the trace's live end; an Offline pen is lifted (hollow)."
+    ],
+    "rules": [
+      {
+        "name": "The Reserved Red Rule",
+        "body": "Red appears only for readings at 90 % or more (and the matching verdict numeral). Offline, stopped and reconnecting are never red.",
+        "section": "colors"
+      },
+      {
+        "name": "The Printed-Where-It-Runs Rule",
+        "body": "Grid ink exists only inside a trace or a drive track. It is never a page background or texture.",
+        "section": "colors"
+      },
+      {
+        "name": "The Words-Too Rule",
+        "body": "No state is carried by color alone; pair it with a word or a filled/hollow shape.",
+        "section": "colors"
+      },
+      {
+        "name": "The Two Widths Rule",
+        "body": "Readings use the 88 % width with tabular figures; words stay at normal width. Do not mix.",
+        "section": "typography"
+      },
+      {
+        "name": "The One Sentence Rule",
+        "body": "The page has one display-size line and it is a complete sentence about the state of the Machines.",
+        "section": "typography"
+      },
+      {
+        "name": "The Flat Sheet Rule",
+        "body": "A sheet is a hairline-ringed rectangle. Depth is told by fill (Sheet vs. paper vs. transparent), not by shadow.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do put the verdict sentence first and let sheets confirm it.",
+      "Do color a reading, its trace, and its pen together by level: ink, ochre from 80 %, red from 90 %.",
+      "Do say state in words next to the dot or color.",
+      "Do keep the trace axis the real scale: 24 h across, 0-100 % up, grid every 3 h and 25 %.",
+      "Do use the 88 % width with tabular figures for every live number.",
+      "Do keep Offline sheets legible but receding: transparent fill, Pencil Grey, hollow pen.",
+      "Do use the `sheets` grid and a 2px focus ring on every interactive element."
+    ],
+    "donts": [
+      "Don't build a stat-tile admin grid: badge, KPI tile, decorative sparkline.",
+      "Don't use red for anything below 90 % or for Offline, stopped, or reconnecting.",
+      "Don't print grid ink as a page background, or add gradients, glass, or glow.",
+      "Don't add a theme toggle; follow the system setting.",
+      "Don't add a primary action to the page; Retry exists only for an unreachable server.",
+      "Don't interpolate across an Offline gap in a trace.",
+      "Don't use the Machine terms host, node, device, stats, or health in copy; use Machine, Usage, Online, Offline, Last seen, History."
+    ]
+  }
+}

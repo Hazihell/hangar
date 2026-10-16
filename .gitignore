@@ -10,3 +10,10 @@ skills/impeccable/scripts/bin/
 # Framer skills hold per-site data; they live in each site project instead
 skills/framer/
 skills/framer-code-components/
+
+# Dashboard build output and local installs
+dashboard/server/node_modules/
+dashboard/web/node_modules/
+dashboard/web/dist/
+dashboard/web/dist.old/
+dashboard/web/.dist-*/

@@ -1,0 +1,149 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/archivo/wdth.css";
+
+/* The Dashboard follows the system setting; there is no toggle. */
+@custom-variant dark (@media (prefers-color-scheme: dark));
+
+@theme inline {
+  --font-heading: var(--font-sans);
+  --font-sans: "Archivo Variable", ui-sans-serif, system-ui, sans-serif;
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+
+  /* Chart paper and pen inks */
+  --color-grid: var(--grid);
+  --color-ink-cpu: var(--ink-cpu);
+  --color-ink-ram: var(--ink-ram);
+  --color-ink-disk: var(--ink-disk);
+  --color-online: var(--online);
+  --color-high: var(--high);
+  --color-full: var(--full);
+
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+}
+
+:root {
+  color-scheme: light;
+  --background: oklch(0.955 0.007 160);
+  --foreground: oklch(0.24 0.012 240);
+  --card: oklch(0.993 0.003 160);
+  --card-foreground: var(--foreground);
+  --popover: var(--card);
+  --popover-foreground: var(--foreground);
+  --primary: oklch(0.27 0.014 240);
+  --primary-foreground: oklch(0.985 0.003 160);
+  --secondary: oklch(0.93 0.008 160);
+  --secondary-foreground: var(--foreground);
+  --muted: oklch(0.935 0.008 160);
+  --muted-foreground: oklch(0.48 0.014 220);
+  --accent: oklch(0.93 0.01 160);
+  --accent-foreground: var(--foreground);
+  --destructive: var(--full);
+  --border: oklch(0.875 0.012 160);
+  --input: var(--border);
+  --ring: oklch(0.55 0.12 265);
+  --radius: 0.5rem;
+
+  --grid: oklch(0.885 0.03 160);
+  --ink-cpu: oklch(0.5 0.17 266);
+  --ink-ram: oklch(0.5 0.15 312);
+  --ink-disk: oklch(0.5 0.09 182);
+  --online: oklch(0.56 0.14 152);
+  --high: oklch(0.53 0.12 68);
+  --full: oklch(0.54 0.2 27);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --background: oklch(0.165 0.008 170);
+    --foreground: oklch(0.93 0.006 160);
+    --card: oklch(0.205 0.009 170);
+    --primary: oklch(0.92 0.006 160);
+    --primary-foreground: oklch(0.2 0.01 170);
+    --secondary: oklch(0.26 0.01 170);
+    --muted: oklch(0.25 0.01 170);
+    --muted-foreground: oklch(0.71 0.014 165);
+    --accent: oklch(0.27 0.012 170);
+    --border: oklch(0.3 0.012 170);
+    --ring: oklch(0.7 0.12 265);
+
+    --grid: oklch(0.285 0.018 165);
+    --ink-cpu: oklch(0.74 0.12 266);
+    --ink-ram: oklch(0.74 0.12 312);
+    --ink-disk: oklch(0.76 0.09 182);
+    --online: oklch(0.77 0.15 152);
+    --high: oklch(0.82 0.13 78);
+    --full: oklch(0.7 0.18 25);
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html {
+    @apply font-sans;
+    -webkit-text-size-adjust: 100%;
+    -webkit-tap-highlight-color: transparent;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+    min-height: 100dvh;
+  }
+  ::selection {
+    background: color-mix(in oklch, var(--ink-cpu) 22%, transparent);
+  }
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+  a {
+    text-underline-offset: 0.2em;
+    text-decoration-thickness: 1px;
+  }
+}
+
+@utility readings {
+  /* Pen readings: semi-condensed, tabular so live numbers don't jitter. */
+  font-stretch: 88%;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+@utility tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+@utility sheets {
+  /* One column on a phone, as many ~30rem columns as fit beyond that. */
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 30rem), 1fr));
+  align-items: start;
+  @media (width >= 40rem) {
+    gap: 1.5rem;
+  }
+}

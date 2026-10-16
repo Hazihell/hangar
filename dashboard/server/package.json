@@ -1,0 +1,7 @@
+{
+  "name": "hangar-dashboard-server",
+  "private": true,
+  "type": "module",
+  "scripts": { "start": "node server.ts", "test": "node --test *.test.ts" },
+  "engines": { "node": ">=24" }
+}

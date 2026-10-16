@@ -9,6 +9,7 @@ The repo is cloned to `~/.agents` on each machine, because Codex and the skills 
 | `cast/cast.md` | The instructions every agent reads: model list, sub-agent rules | `~/.claude/CLAUDE.md` imports it; `~/.codex/AGENTS.md` links to it |
 | `skills/` | All skills, mine and installed ones; `.skill-lock.json` records where installed ones came from | `~/.claude/skills` links here; Codex reads `~/.agents/skills` directly |
 | `claude/` | Claude Code settings, status line, hooks, sub-agent definitions | Linked into `~/.claude`, except `settings.json`, which is copied |
+| `dashboard/` | Dashboard server, page and Mac reporter | Linux user service; launchd reporter on the Mac |
 | `bin/hangar` | The command below | Linked to `~/.local/bin/hangar` |
 
 `settings.json` is copied, not linked, because Claude Code rewrites it when you change a setting and can turn a link into a plain file. `hangar sync` merges changes from both machines, and stops to ask only when both changed the same setting.
@@ -59,3 +60,13 @@ hangar doctor
 ```
 
 Clone projects into the Linux home folder, not under `/mnt/c`.
+
+## Dashboard
+
+Shows each Machine's Usage, whether it is Online, when it was last seen and its last 24 hours of History. Open https://stormtrooper-linux.taila332e5.ts.net while connected to Tailscale.
+
+`hangar install` builds the page, starts `hangar-dashboard.service` on Linux and runs `tailscale serve --bg 4318`. Install Node 24 first; the service records its absolute path, and install/update refresh that path after a Node upgrade. If Tailscale refuses permission, run `sudo tailscale set --operator=$USER`. `hangar update` rebuilds the page and restarts the service. `hangar setup` on the Mac loads its reporter with launchd.
+
+The PC collects Windows Usage from WSL; the Mac sends a report every ten seconds. Machine names live in `dashboard/machines.json`; the contract is in `dashboard/API.md`. Reports and History stay in `~/.local/state/hangar/dashboard.db`. Override the server port or database with `HANGAR_DASHBOARD_PORT` and `HANGAR_DASHBOARD_DB`. The Mac reporter accepts `HANGAR_MACHINE` and `HANGAR_DASHBOARD_URL` (the full `/api/report` URL); set these in the launchd plist's `EnvironmentVariables` when needed.
+
+Run `npm test --prefix dashboard/server` and `dashboard/reporter/parser-tests.sh` to check the server and Mac parsers. The server needs no npm dependencies or build step.

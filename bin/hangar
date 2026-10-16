@@ -91,6 +91,86 @@ backup() { # move a path aside before replacing it; one folder per run
   say "  ${D}moved old $src to $dest${N}"
 }
 
+# ── Dashboard ─────────────────────────────────────────────────────────────────
+dashboard_node() {
+  local major
+  if ! command -v node >/dev/null; then bad "Dashboard needs Node 24 or newer; install Node first"; return 1; fi
+  major="$(node -p 'process.versions.node.split(".")[0]')" || return 1
+  if [ "$major" -lt 24 ]; then bad "Dashboard needs Node 24 or newer (found $major)"; return 1; fi
+}
+
+build_dashboard() {
+  [ -f "$REPO/dashboard/web/package.json" ] || return 0
+  say "Dashboard page"
+  local tmp rc=0
+  tmp="$(mktemp -d "$REPO/dashboard/web/.dist-XXXXXX")" || return 1
+  (cd "$REPO/dashboard/web" && npm ci --no-audit --no-fund && npm run build -- --outDir "$tmp") || rc=1
+  if [ "$rc" = 0 ]; then
+    # Swap in the new build only once it's complete; a failed build keeps the old page.
+    local dist="$REPO/dashboard/web/dist"
+    rm -rf "$dist.old"
+    if [ -e "$dist" ]; then mv "$dist" "$dist.old" || rc=1; fi
+    if [ "$rc" = 0 ] && ! mv "$tmp" "$dist"; then
+      rc=1; [ -e "$dist.old" ] && mv "$dist.old" "$dist"
+    fi
+    rm -rf "$dist.old"
+  fi
+  rm -rf "$tmp"
+  return "$rc"
+}
+
+write_dashboard_unit() {
+  local node unit="$HOME/.config/systemd/user/hangar-dashboard.service" tmp
+  dashboard_node || return 1
+  node="$(command -v node)"
+  mkdir -p "$(dirname "$unit")"
+  tmp="$(mktemp)"
+  cat > "$tmp" <<EOF
+[Unit]
+Description=Hangar Dashboard
+After=network.target
+
+[Service]
+ExecStart="$node" "$REPO/dashboard/server/server.ts"
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+EOF
+  if ! cmp -s "$tmp" "$unit"; then
+    mv "$tmp" "$unit"
+    systemctl --user daemon-reload || return 1
+  else rm -f "$tmp"; fi
+}
+
+install_dashboard() {
+  write_dashboard_unit || return 1
+  build_dashboard || warn "Dashboard page build failed; keeping the previous page"
+  if systemctl --user enable --now hangar-dashboard.service && systemctl --user restart hangar-dashboard.service; then ok "Dashboard service enabled"
+  else warn "Dashboard service failed; check 'systemctl --user status hangar-dashboard.service'"; fi
+  if tailscale serve --bg 4318; then ok "Dashboard served through Tailscale"
+  else warn "Tailscale serve failed; for permissions run 'sudo tailscale set --operator=$USER', then 'tailscale serve --bg 4318'"; fi
+}
+
+setup_reporter() {
+  local plist="$HOME/Library/LaunchAgents/com.hangar.reporter.plist" script escaped log domain attempt
+  script="$REPO/dashboard/reporter/mac-reporter.sh"
+  # Escape both XML text and sed's replacement characters, including repo paths with spaces.
+  escaped="$(printf '%s' "$script" | sed 's/\&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/[\\&|]/\\&/g')"
+  log="$(printf '%s' "$HOME/Library/Logs/hangar-reporter.log" | sed 's/\&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/[\\&|]/\\&/g')"
+  mkdir -p "$(dirname "$plist")" "$HOME/Library/Logs"
+  sed "s|__REPORTER__|$escaped|g; s|__LOG__|$log|g" "$REPO/dashboard/reporter/com.hangar.reporter.plist" > "$plist"
+  domain="gui/$(id -u)"
+  launchctl bootout "$domain/com.hangar.reporter" >/dev/null 2>&1 || true
+  for ((attempt=0; attempt<20; attempt++)); do
+    launchctl print "$domain/com.hangar.reporter" >/dev/null 2>&1 || break
+    sleep 0.25
+  done
+  if launchctl bootstrap "$domain" "$plist" || { sleep 1; launchctl bootstrap "$domain" "$plist"; }; then ok "Dashboard reporter loaded"
+  else bad "Dashboard reporter failed to load"; fi
+}
+
 # ── setup ─────────────────────────────────────────────────────────────────────
 cmd_setup() {
   say "Linking config into place"
@@ -130,6 +210,7 @@ cmd_setup() {
       bad "$(basename "$dir"): npm ci failed"
     fi
   done
+  if [ "$OS" = Darwin ]; then setup_reporter; fi
   if [ "$FAILED" = 1 ]; then say "${R}Setup finished with errors.${N}"; exit 1; fi
   say "Done. Run 'hangar doctor' to check the whole machine."
 }
@@ -189,6 +270,11 @@ cmd_sync() {
   fi
   rm -f "$captured"
   apply_settings
+  if [ "$OS" = Linux ] && command -v systemctl >/dev/null && systemctl --user is-active --quiet hangar-dashboard.service 2>/dev/null; then
+    systemctl --user restart hangar-dashboard.service || warn "Dashboard restart failed"
+  elif [ "$OS" = Darwin ] && command -v launchctl >/dev/null && launchctl print "gui/$(id -u)/com.hangar.reporter" >/dev/null 2>&1; then
+    launchctl kickstart -k "gui/$(id -u)/com.hangar.reporter" || warn "Dashboard reporter restart failed"
+  fi
   say "Up to date."
 }
 
@@ -288,6 +374,23 @@ cmd_doctor() {
     fi
   fi
 
+  say "Dashboard"
+  if [ "$OS" = Linux ]; then
+    if systemctl --user is-active --quiet hangar-dashboard.service 2>/dev/null; then ok "Dashboard service running"
+    else bad "Dashboard service stopped; run 'hangar install'"; fi
+    local serve_status; serve_status="$(tailscale serve status 2>/dev/null || true)"
+    if grep -qE '127\.0\.0\.1:4318|localhost:4318' <<< "$serve_status"; then ok "Tailscale proxies Dashboard"
+    else bad "Tailscale proxy missing; run 'tailscale serve --bg 4318'"; fi
+    if curl -fsS --max-time 5 http://127.0.0.1:4318/api/machines >/dev/null; then ok "Dashboard API answers"
+    else bad "Dashboard API unreachable"; fi
+  elif [ "$OS" = Darwin ]; then
+    if launchctl print "gui/$(id -u)/com.hangar.reporter" >/dev/null 2>&1; then ok "Dashboard reporter loaded"
+    else bad "Dashboard reporter missing; run 'hangar setup'"; fi
+    local dashboard_url="${HANGAR_DASHBOARD_URL:-https://stormtrooper-linux.taila332e5.ts.net/api/report}"
+    if curl -fsS --max-time 5 "${dashboard_url%/api/report}/api/machines" >/dev/null; then ok "Dashboard reachable"
+    else bad "Dashboard unreachable"; fi
+  fi
+
   say ""
   if [ "$FAILED" = 1 ]; then say "${R}Some checks failed.${N}"; exit 1
   elif [ "$WARNED" = 1 ]; then say "${Y}Working, with warnings.${N}"
@@ -296,6 +399,7 @@ cmd_doctor() {
 
 # ── update ────────────────────────────────────────────────────────────────────
 cmd_update() {
+  if [ "$OS" = Linux ]; then dashboard_node || return 1; fi
   say "Claude Code"
   if ! command -v claude >/dev/null; then say "  skipped (not installed)"
   elif ! claude update; then warn "claude update failed"; fi
@@ -322,6 +426,11 @@ cmd_update() {
       brew upgrade -q "$f" || warn "brew upgrade $f failed"
     done
   fi
+  if [ "$OS" = Linux ]; then
+    write_dashboard_unit || return 1
+    build_dashboard || warn "Dashboard page build failed; keeping the previous page"
+    systemctl --user restart hangar-dashboard.service || warn "Dashboard restart failed; run 'hangar install'"
+  fi
   cd "$REPO"
   if [ -n "$(git status --porcelain skills)" ]; then
     say ""; say "Skill updates changed these files. Review with 'git -C $REPO diff', then 'hangar sync':"
@@ -333,6 +442,7 @@ cmd_update() {
 cmd_install() {
   [ "$OS" = Linux ] || { say "'install' sets up a fresh Linux server. On the Mac use 'setup'."; exit 1; }
   export PATH="$HOME/.local/bin:$PATH"
+  dashboard_node || return 1
   say "System packages"
   add_gh_repo || warn "couldn't add GitHub's apt source; installing Ubuntu's older gh instead"
   sudo apt-get update -q && sudo apt-get install -y -q build-essential python3 git curl unzip xz-utils jq gh
@@ -348,6 +458,7 @@ cmd_install() {
   t3 service install || warn "background service didn't start; is systemd on? ('hangar doctor' checks)"
   command -v node >/dev/null || warn "no Node yet: install it, and if you use nvm, put its lines in ~/.profile"
   say ""
+  install_dashboard
   say "Next, by hand:"
   say "  claude        sign in, then /exit"
   say "  codex login   (or use 'Connect with ChatGPT' in T3 instead)"
@@ -359,11 +470,11 @@ cmd_help() {
   cat <<EOF
 hangar: keep this machine's agent setup in step with $REPO
 
-  setup     link skills, instructions and Claude config into place; install skill dependencies
+  setup     link config, install skill dependencies; on macOS, load the Dashboard reporter
   sync      commit this machine's changes, pull the other machine's, push, apply
-  doctor    check links, PATH, T3 service, browser and WSL settings
-  update    update Claude Code, Codex, installed skills, T3 Code, gh and tea
-  install   Linux only: install system packages, gh, tea, Claude Code, Codex and T3 Code
+  doctor    check links, PATH, T3 service, browser, WSL and Dashboard
+  update    update tools and skills; rebuild and restart Dashboard on Linux
+  install   Linux only: install tools, T3 Code and Dashboard; serve through Tailscale
 EOF
 }
 
