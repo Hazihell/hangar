@@ -1,0 +1,13 @@
+{
+  "name": "Hangar Dashboard",
+  "short_name": "Hangar",
+  "description": "Every Machine: Online or Offline, its Usage and its History.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f3f5f2",
+  "theme_color": "#f3f5f2",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}
