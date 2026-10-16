@@ -83,7 +83,7 @@ export function useDashboard() {
         if (disposed || id !== loadId) return
         const offset = Date.parse(body.now) - Date.now()
         skew = Number.isFinite(offset) ? offset : 0
-        let machines = body.machines
+        let machines = body.machines.map((m) => ({ ...m, vpns: m.vpns ?? [] }))
         for (const event of pending ?? []) machines = mergeEvent(machines, event, Date.now() + skew)
         pending = null
         lastHeard = Date.now()

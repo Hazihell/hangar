@@ -69,4 +69,6 @@ Shows each Machine's Usage, whether it is Online, when it was last seen and its 
 
 The PC collects Windows Usage from WSL; the Mac sends a report every ten seconds. Machine names live in `dashboard/machines.json`; the contract is in `dashboard/API.md`. Reports and History stay in `~/.local/state/hangar/dashboard.db`. Override the server port or database with `HANGAR_DASHBOARD_PORT` and `HANGAR_DASHBOARD_DB`. The Mac reporter accepts `HANGAR_MACHINE` and `HANGAR_DASHBOARD_URL` (the full `/api/report` URL); set these in the launchd plist's `EnvironmentVariables` when needed.
 
+The Dashboard lists OS-managed VPNs (excluding Tailscale) and can connect or disconnect each one. Mac VPN control requires Remote Login enabled and the PC user’s SSH key in the Mac user’s `authorized_keys`; `hangar doctor` checks this connection.
+
 Run `npm test --prefix dashboard/server` and `dashboard/reporter/parser-tests.sh` to check the server and Mac parsers. The server needs no npm dependencies or build step.

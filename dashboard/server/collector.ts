@@ -2,8 +2,29 @@ import { spawn, execFile } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { validReport } from './rules.ts';
+// Kept as a script fragment so collector behavior can be exercised with stubbed OS results.
+export const vpnScript = `
+  $vpnFailed = $false
+  $seenVpns = @{}
+  $vpns = @(foreach ($all in @($false, $true)) {
+    try {
+      Get-VpnConnection -AllUserConnection:$all -ErrorAction Stop | ForEach-Object {
+        if ($_.Name -notmatch 'tailscale' -and -not $seenVpns.ContainsKey($_.Name)) {
+          $seenVpns[$_.Name] = $true
+          $status = ([string]$_.ConnectionStatus).ToLowerInvariant()
+          if ($status -notin @('connected','disconnected','connecting','disconnecting')) { $status = 'disconnected' }
+          $kind = if ($_.TunnelType -in @('L2tp','Pptp')) { 'ppp' } else { 'other' }
+          @{name=$_.Name;status=$status;kind=$kind}
+        }
+      }
+    } catch { $vpnFailed = $true }
+  })
+  if (-not $vpnFailed) { $report.vpns = $vpns }
+`;
 export const script = `
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
 $cpu = New-Object System.Diagnostics.PerformanceCounter('Processor','% Processor Time','_Total')
 $available = New-Object System.Diagnostics.PerformanceCounter('Memory','Available Bytes')
 $total = [double](Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory
@@ -19,7 +40,9 @@ while ($true) {
       @{name=$drive.Name.TrimEnd('\\'); used=[double]($size - $drive.TotalFreeSpace); total=$size}
     } catch { [Console]::Error.WriteLine($_.Exception.Message) }
   })
-  @{cpu=[Math]::Min([double]100,[Math]::Max([double]0,[double]$cpu.NextValue())); ram=@{used=[Math]::Max([double]0,($total - [double]$available.NextValue()));total=$total};disks=$disks} | ConvertTo-Json -Depth 4 -Compress
+  $report = @{cpu=[Math]::Min([double]100,[Math]::Max([double]0,[double]$cpu.NextValue())); ram=@{used=[Math]::Max([double]0,($total - [double]$available.NextValue()));total=$total};disks=$disks}
+  ${vpnScript}
+  $report | ConvertTo-Json -Depth 4 -Compress
   } catch { [Console]::Error.WriteLine($_.Exception.Message) }
 }`;
 export function reportFromLine(line: string, machine: string, t3: boolean) {

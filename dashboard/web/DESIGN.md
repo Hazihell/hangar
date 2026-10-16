@@ -139,9 +139,9 @@ Cool green-tinted neutrals (hue 160-170) with three pen inks at one lightness, a
 - **Disk Teal-Green** (`ink-disk`): Disk trace, and the drive meter fill while a drive is below 80 %.
 
 ### Tertiary (state inks)
-- **Online Green** (`online-green`): the filled pen dot for Online, the Live connection dot, T3 Running.
+- **Online Green** (`online-green`): the filled pen dot for Online, the Live connection dot, T3 Running, a Connected VPN.
 - **High Ochre** (`high-ochre`): 80-89 % readings, trace and drive meter; T3 stopped; reconnecting; stale-notice border. High is not a verdict issue.
-- **Full Red** (`full-red`): 90 % and over only: the reading, its trace and pen, the drive meter, and the numeral inside the verdict sentence. Also the destructive token.
+- **Full Red** (`full-red`): 90 % and over only: the reading, its trace and pen, the drive meter, and the numeral inside the verdict sentence. Also the destructive token, and the message of a VPN command that failed.
 
 ### Neutral
 - **Chart Paper** (`chart-paper`): page ground.
@@ -152,7 +152,7 @@ Cool green-tinted neutrals (hue 160-170) with three pen inks at one lightness, a
 - **Focus Ring** (`focus-ring`): 2px outline, 2px offset, on every focusable element.
 
 ### Named Rules
-**The Reserved Red Rule.** Red appears only for readings at 90 % or more (and the matching verdict numeral). Offline, stopped and reconnecting are never red.
+**The Reserved Red Rule.** Red appears only for readings at 90 % or more (and the matching verdict numeral), and for a VPN command's error message. Offline, stopped, reconnecting, Disconnected and a command under way are never red.
 
 **The Printed-Where-It-Runs Rule.** Grid ink exists only inside a trace or a drive track. It is never a page background or texture.
 
@@ -186,7 +186,7 @@ A single page, max width 78rem, centered, 1rem side padding on phone and 2rem fr
 
 The sheet grid is `repeat(auto-fill, minmax(min(100%, 30rem), 1fr))` with 1rem gaps (1.5rem from 40rem), top-aligned so sheets of unequal height do not stretch. That gives one column on a phone, two on a laptop, three on wide screens.
 
-Inside a sheet: header (name and OS on one baseline, status line beneath), a hairline, then channel rows, an optional two-column drive list (one column on phone), and a dashed-rule service row. Channel rows are a two-column grid: reading column 6.75rem on phone, 8rem from 40rem, trace filling the rest. Sheet padding is 1.25rem, 1.5rem from 40rem; channels sit 1rem apart; sections 1.25rem apart. Safe-area insets are respected top and bottom. Legible at 390px.
+Inside a sheet: header (name and OS on one baseline, status line beneath), a hairline, then channel rows, an optional two-column drive list (one column on phone), and one dashed rule over what runs on the Machine: the service row, then a row per VPN. Channel rows are a two-column grid: reading column 6.75rem on phone, 8rem from 40rem, trace filling the rest. Sheet padding is 1.25rem, 1.5rem from 40rem; channels sit 1rem apart; sections 1.25rem apart. Safe-area insets are respected top and bottom. Legible at 390px.
 
 ## Elevation & Depth
 
@@ -219,6 +219,16 @@ Soft but not round: sheets use the 0.7rem radius (`xl`), buttons and the empty-s
 ### Service row
 - "T3 service" label and a dot with "Running" or "Stopped" (ochre, medium weight). Preceded by a dashed rule.
 
+### VPN row
+- Sits under the same dashed rule as the service row, 1rem apart. Left: the VPN's name (500) followed by "VPN" in Pencil Grey, and beneath it an 0.875rem status line: an 8px dot and the word. Connected is a filled Online Green dot; Disconnected a 1.5px hollow ring in Pencil Grey; Connecting/Disconnecting (reported by the Machine itself) a grey dot that breathes.
+- Right: one outline button, 36px tall with a 44px hit area, at a fixed 8.75rem width so its label can change without the row moving. It reads **Disconnect** when Connected and **Connect** when Disconnected, with the VPN's name for screen readers only.
+- Under way (a command pending, or the Machine reporting a transition): the button goes dashed and Pencil Grey, reads "Connecting…" / "Disconnecting…", and carries a breathing 8px dot in the ink of where it is heading (Online Green for connect, grey for disconnect). It turns busy the moment it is pressed, before the server answers. Breathing is a 2.4 s opacity cycle and stops under reduced motion. A PC connect can take 40 s, so nothing about this state is ochre or red.
+- A failed command leaves one 0.8125rem Full Red line spanning the row: "Couldn't connect." (500) then the message. It stays until the next command.
+- Offline: last known state, the dot greyed, the button at half strength and disabled (still focusable). Disabled too while the server can't be reached. A Machine with no VPNs shows no row and no heading.
+
+### Confirmation dialog
+- Disconnect asks first; Connect doesn't. shadcn Base UI AlertDialog on the Sheet fill, 0.7rem radius, hairline ring, over a flat graphite veil (no blur). Title at 1.125rem/600, a question naming both: "Disconnect Steeprock on MacBook Air?"; one sentence of consequence beneath; left-aligned at every width. Footer: Cancel (outline, takes first focus) and Disconnect (solid graphite, never red); stacked full width on phones with Disconnect on top. Focus returns to the row's button. If the VPN stops being Connected or a command starts elsewhere while it is open, it closes; if the Machine goes Offline or the server can't be reached, it stays, the Disconnect button disables, and a Pencil Grey line says why.
+
 ### Verdict
 - h1 sentence naming the worst issue first (nearly full before stopped before Offline). Further issues are a list of linked lines, each with a dot (red or hollow pen), linking to the sheet. A stale connection lowers the verdict to 60 % opacity. Healthy: "Both Machines are Online. Nothing needs attention."
 
@@ -226,7 +236,7 @@ Soft but not round: sheets use the 0.7rem radius (`xl`), buttons and the empty-s
 - Quiet 0.875rem Pencil Grey text with a dot: green Live, ochre Reconnecting, hollow Not connected, faint grey Connecting.
 
 ### Buttons and notices
-- shadcn Base UI button, outline variant only in use, 0.5rem radius, 36px height at `lg`. Appears only as "Try again now" / "Try again" when the server is unreachable. The stale notice is an Alert with an ochre-tinted border on the Sheet fill.
+- shadcn Base UI button, 0.5rem radius, 36px height at `lg`. Outline everywhere on the page: "Try again now" / "Try again" when the server is unreachable, and each VPN row's Connect/Disconnect. The solid graphite fill appears only as the confirming action inside the dialog. The stale notice is an Alert with an ochre-tinted border on the Sheet fill.
 
 ### Loading and empty
 - Skeletons mirror the sheet layout. A Machine with no Usage shows a miniature ruled grid panel with the sentence "No Usage yet: this Machine hasn't reported."
@@ -247,6 +257,7 @@ Soft but not round: sheets use the 0.7rem radius (`xl`), buttons and the empty-s
 - **Don't** use red for anything below 90 % or for Offline, stopped, or reconnecting.
 - **Don't** print grid ink as a page background, or add gradients, glass, or glow.
 - **Don't** add a theme toggle; follow the system setting.
-- **Don't** add a primary action to the page; Retry exists only for an unreachable server.
+- **Don't** add a primary action to the page. The only actions are Retry for an unreachable server and each VPN row's Connect/Disconnect, which are outline buttons inside their sheet.
+- **Don't** make a disconnect button or confirmation red; disconnecting a VPN is a choice, not an alarm.
 - **Don't** interpolate across an Offline gap in a trace.
 - **Don't** use the Machine terms host, node, device, stats, or health in copy; use Machine, Usage, Online, Offline, Last seen, History.

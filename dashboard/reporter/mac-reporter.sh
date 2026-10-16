@@ -15,8 +15,39 @@ parse_ram() {
 parse_disk() {
   awk 'NR==2 && $2>0 { printf "%.0f %.0f\n", ($2-$4)*1024, $2*1024; found=1 } END { if (!found) exit 1 }'
 }
+parse_vpns() {
+  awk '
+    function json(s, out, i, c) {
+      out=""
+      for (i=1; i<=length(s); i++) {
+        c=substr(s,i,1)
+        if (c=="\\") out=out "\\\\"
+        else if (c=="\"") out=out "\\\""
+        else if (c in controls) out=out controls[c]
+        else out=out c
+      }
+      return out
+    }
+    BEGIN {
+      for (i=1;i<32;i++) controls[sprintf("%c",i)]=sprintf("\\u%04x",i)
+      printf "["
+    }
+    /\(/ && /"/ && /\[[^]]*\][[:space:]]*$/ {
+      line=$0
+      type=line; sub(/^.*\[/,"",type); sub(/\][[:space:]]*$/,"",type)
+      name=line; sub(/^[^"]*"/,"",name); sub(/"[^"]*$/,"",name)
+      if (tolower(name) ~ /tailscale/ || tolower(type) ~ /tailscale/) next
+      status=line; sub(/^[^(]*\(/,"",status); sub(/\).*$/,"",status)
+      status=tolower(status)
+      if (status!="connected" && status!="disconnected" && status!="connecting" && status!="disconnecting") status="disconnected"
+      kind=(type ~ /^PPP/ ? "ppp" : "other")
+      printf "%s{\"name\":\"%s\",\"status\":\"%s\",\"kind\":\"%s\"}", separator,json(name),status,kind
+      separator=","
+    }
+    END { print "]" }'
+}
 report_once() {
-  local cpu used total disk disk_used disk_total machine error status=0
+  local cpu used total disk disk_used disk_total machine error vpns vpn_field='' status=0
   cpu=$(top -l 2 -n 0 -s 10 | parse_cpu) || return
   used=$(vm_stat | parse_ram) || return
   total=$(sysctl -n hw.memsize) || return
@@ -25,8 +56,12 @@ report_once() {
   machine=${HANGAR_MACHINE:-rogers-macbook-air}
   # IDs are configuration, but still escape them before putting them in JSON.
   machine=$(printf '%s' "$machine" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr -d '\000-\037')
+  if vpns=$(scutil --nc list 2>/dev/null); then
+    vpns=$(printf '%s\n' "$vpns" | parse_vpns)
+    vpn_field=",\"vpns\":$vpns"
+  fi
   error=$(curl -fsS -o /dev/null -w '%{http_code}' --connect-timeout 3 --max-time 5 -H 'Content-Type: application/json' \
-    -d "{\"machine\":\"$machine\",\"cpu\":$cpu,\"ram\":{\"used\":$used,\"total\":$total},\"disks\":[{\"name\":\"Macintosh HD\",\"used\":$disk_used,\"total\":$disk_total}]}" \
+    -d "{\"machine\":\"$machine\",\"cpu\":$cpu,\"ram\":{\"used\":$used,\"total\":$total},\"disks\":[{\"name\":\"Macintosh HD\",\"used\":$disk_used,\"total\":$disk_total}]$vpn_field}" \
     "${HANGAR_DASHBOARD_URL:-https://stormtrooper-linux.taila332e5.ts.net/api/report}" 2>&1) || status=$?
   [ "$status" = 0 ] && [[ "$error" == 2[0-9][0-9] ]] || { printf 'Reporter: %s\n' "$(printf '%s' "$error" | tr '\r\n' '  ')" >&2; return 1; }
 }

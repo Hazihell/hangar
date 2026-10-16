@@ -19,6 +19,20 @@ export type Usage = {
   services?: { t3?: boolean }
 }
 
+export type VpnStatus = "connected" | "disconnected" | "connecting" | "disconnecting"
+
+export type VpnAction = "connect" | "disconnect"
+
+export type Vpn = {
+  name: string
+  /** What the Machine's operating system last reported. */
+  status: VpnStatus
+  /** A command under way, until a report shows it done, it fails, or 90 s pass. */
+  pending: { action: VpnAction; since: string } | null
+  /** The last command failed; stays until the next command on this VPN. */
+  error: { message: string; at: string } | null
+}
+
 export type Machine = {
   id: string
   name: string
@@ -26,6 +40,8 @@ export type Machine = {
   online: boolean
   lastSeen: string | null
   usage: Usage | null
+  /** From the latest report; `[]` if none. */
+  vpns: Vpn[]
   history: HistoryPoint[]
 }
 

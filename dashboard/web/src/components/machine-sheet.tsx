@@ -3,6 +3,7 @@ import { Meter } from "@/components/ui/meter"
 import { Separator } from "@/components/ui/separator"
 import { PenMark } from "@/components/status"
 import { Trace } from "@/components/trace"
+import { VpnList } from "@/components/vpn-list"
 import {
   formatAbsolute,
   formatPercent,
@@ -29,7 +30,7 @@ const LEVEL_TEXT: Record<Level, string> = {
   full: "text-full",
 }
 
-/** One Machine as a recorder sheet: status, three channels, drives, services. */
+/** One Machine as a recorder sheet: status, three channels, drives, services, VPNs. */
 export function MachineSheet({
   machine,
   now,
@@ -118,8 +119,24 @@ export function MachineSheet({
 
           {usage.disks.length > 1 && <DriveList disks={usage.disks} muted={!online} />}
 
-          {usage.services?.t3 !== undefined && (
-            <ServiceRow name="T3 service" running={usage.services.t3} muted={!online} />
+          {(usage.services?.t3 !== undefined || machine.vpns.length > 0) && (
+            // What runs on the Machine, under one dashed rule.
+            <div className="flex flex-col gap-4 border-t border-dashed pt-4">
+              {usage.services?.t3 !== undefined && (
+                <ServiceRow name="T3 service" running={usage.services.t3} muted={!online} />
+              )}
+              <VpnList
+                machine={machine}
+                muted={!online}
+                locked={
+                  !online
+                    ? `${machine.name} is Offline.`
+                    : heardAt !== null
+                      ? "The Dashboard can’t reach the server."
+                      : null
+                }
+              />
+            </div>
           )}
         </div>
       ) : (
@@ -256,7 +273,7 @@ function DriveList({ disks, muted }: { disks: Disk[]; muted: boolean }) {
 
 function ServiceRow({ name, running, muted }: { name: string; running: boolean; muted: boolean }) {
   return (
-    <div className="flex items-center justify-between gap-3 border-t border-dashed pt-4 text-[0.9375rem]">
+    <div className="flex items-center justify-between gap-3 text-[0.9375rem]">
       <span className="font-medium">{name}</span>
       <span
         className={cn(

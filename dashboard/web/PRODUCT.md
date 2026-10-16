@@ -27,8 +27,8 @@ Hangar keeps every computer that runs Roger's coding agents set up the same way.
 ## Capabilities and Constraints
 
 - Data contract: `dashboard/API.md`. A Machine is Online when its latest report arrived less than 30 s ago. History is one point per minute, 24 h, with cpu, ram and fullest-disk percents.
-- Terminology from `GLOSSARY.md`: Machine, Usage, Online, Offline, Last seen, History, Dashboard, Alert. Avoid: host, node, device, box, server (for a Machine); stats, metrics, load, health; up/down/on/off/running/asleep.
-- Display only. Browser push Alerts (service worker) are a planned follow-up; the page must stay manifest- and service-worker-friendly.
+- Terminology from `GLOSSARY.md`: Machine, Usage, Online, Offline, Last seen, History, VPN, Dashboard, Alert. Avoid: host, node, device, box, server (for a Machine); stats, metrics, load, health; up/down/on/off/running/asleep.
+- Mostly display. The one action is connecting or disconnecting a Machine's VPNs (disconnecting asks first). Browser push Alerts (service worker) are a planned follow-up; the page must stay manifest- and service-worker-friendly.
 
 ## Product Principles
 
