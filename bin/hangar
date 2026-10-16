@@ -50,6 +50,34 @@ ini_get() { # ini_get <section> <key> <file>: value of key inside [section]
     END { if (found) print val }'
 }
 
+add_gh_repo() { # GitHub's own apt source: Ubuntu's gh package lags far behind
+  local list=/etc/apt/sources.list.d/github-cli.list key=/etc/apt/keyrings/githubcli-archive-keyring.gpg
+  [ -f "$list" ] && return 0
+  sudo mkdir -p -m 755 /etc/apt/keyrings &&
+    curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo tee "$key" >/dev/null &&
+    sudo chmod go+r "$key" &&
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=$key] https://cli.github.com/packages stable main" |
+      sudo tee "$list" >/dev/null
+}
+
+install_tea() { # latest Gitea CLI into ~/.local/bin, checked against its published checksum; it has no apt source
+  local tag ver cur arch f url tmp rc=0
+  tag="$(curl -fsSL https://gitea.com/api/v1/repos/gitea/tea/releases/latest | jq -r .tag_name)" || return 1
+  ver="${tag#v}"
+  cur="$(tea --version 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' | awk '{print $2; exit}' || true)"
+  if [ "$cur" = "$ver" ]; then ok "tea $ver"; return 0; fi
+  case "$(uname -m)" in x86_64) arch=amd64 ;; aarch64 | arm64) arch=arm64 ;; *) return 1 ;; esac
+  f="tea-$ver-linux-$arch.xz"
+  url="https://gitea.com/gitea/tea/releases/download/$tag/$f"
+  tmp="$(mktemp -d)"
+  { curl -fsSL -o "$tmp/$f" "$url" && curl -fsSL -o "$tmp/$f.sha256" "$url.sha256" &&
+    (cd "$tmp" && sha256sum -c --quiet "$f.sha256") && xz -d "$tmp/$f" &&
+    mkdir -p "$HOME/.local/bin" && install -m 755 "$tmp/${f%.xz}" "$HOME/.local/bin/tea"; } || rc=1
+  rm -rf "$tmp"
+  [ "$rc" = 0 ] && ok "tea ${cur:+$cur -> }$ver"
+  return "$rc"
+}
+
 BACKUP_DIR=
 backup() { # move a path aside before replacing it; one folder per run
   local src="$1" dest
@@ -209,10 +237,11 @@ cmd_doctor() {
 
   say "Tools T3 Code can see (login shell PATH)"
   local tool p
-  for tool in git node npm claude codex t3 jq gh; do
+  for tool in git node npm claude codex t3 jq gh tea; do
     p="$(sh -lc "command -v $tool" 2>/dev/null || true)"
     if [ -n "$p" ]; then ok "$tool  ${D}$p${N}"
     elif [ "$tool" = codex ]; then warn "codex not on PATH; fine if you use 'Connect with ChatGPT' in T3"
+    elif [ "$tool" = tea ]; then warn "tea not found; needed only for Gitea repos"
     elif [ "$tool" = t3 ] && [ "$OS" = Darwin ]; then ok "t3  ${D}not needed here; the desktop app runs the server${N}"
     elif [ "$tool" = node ] && command -v node >/dev/null; then
       bad "node only works in interactive shells; move your version manager's lines from ~/.bashrc to ~/.profile"
@@ -278,6 +307,21 @@ cmd_update() {
   say "T3 Code (asks before restarting, since that interrupts running agents)"
   if ! command -v t3 >/dev/null; then say "  skipped (no t3 command here)"
   elif ! t3 update; then warn "t3 update failed"; fi
+  say "gh and tea"
+  if [ "$OS" = Linux ]; then
+    if ! command -v gh >/dev/null; then say "  gh skipped (not installed)"
+    elif sudo apt-get update -q >/dev/null && sudo apt-get install -y -q --only-upgrade gh >/dev/null; then
+      ok "gh $(gh --version | awk 'NR == 1 {print $3}')"
+    else warn "gh update failed"; fi
+    if ! command -v tea >/dev/null; then say "  tea skipped (not installed)"
+    else install_tea || warn "tea update failed"; fi
+  elif command -v brew >/dev/null; then
+    local f
+    for f in gh tea; do
+      brew list --formula "$f" >/dev/null 2>&1 || continue
+      brew upgrade -q "$f" || warn "brew upgrade $f failed"
+    done
+  fi
   cd "$REPO"
   if [ -n "$(git status --porcelain skills)" ]; then
     say ""; say "Skill updates changed these files. Review with 'git -C $REPO diff', then 'hangar sync':"
@@ -290,7 +334,10 @@ cmd_install() {
   [ "$OS" = Linux ] || { say "'install' sets up a fresh Linux server. On the Mac use 'setup'."; exit 1; }
   export PATH="$HOME/.local/bin:$PATH"
   say "System packages"
-  sudo apt-get update -q && sudo apt-get install -y -q build-essential python3 git curl unzip jq gh
+  add_gh_repo || warn "couldn't add GitHub's apt source; installing Ubuntu's older gh instead"
+  sudo apt-get update -q && sudo apt-get install -y -q build-essential python3 git curl unzip xz-utils jq gh
+  say "tea (Gitea CLI)"
+  install_tea || warn "tea install failed; get it from https://gitea.com/gitea/tea/releases"
   say "Claude Code"
   command -v claude >/dev/null || curl -fsSL https://claude.ai/install.sh | bash
   say "Codex"
@@ -315,8 +362,8 @@ hangar: keep this machine's agent setup in step with $REPO
   setup     link skills, instructions and Claude config into place; install skill dependencies
   sync      commit this machine's changes, pull the other machine's, push, apply
   doctor    check links, PATH, T3 service, browser and WSL settings
-  update    update Claude Code, Codex, installed skills and T3 Code
-  install   Linux only: install system packages, Claude Code, Codex and T3 Code
+  update    update Claude Code, Codex, installed skills, T3 Code, gh and tea
+  install   Linux only: install system packages, gh, tea, Claude Code, Codex and T3 Code
 EOF
 }
 

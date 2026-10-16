@@ -22,7 +22,7 @@ Third-party skills keep their upstream licenses; see [THIRD_PARTY.md](THIRD_PART
 ```bash
 hangar sync      # after changing a skill or setting on any machine
 hangar doctor    # when something seems off
-hangar update    # Claude Code, Codex, installed skills, T3 Code
+hangar update    # Claude Code, Codex, installed skills, T3 Code, gh and tea
 tests/sync-tests.sh   # after changing bin/hangar: tests it in scratch home folders
 ```
 
@@ -50,7 +50,7 @@ In Ubuntu:
 sudo apt update && sudo apt install -y gh git
 gh auth login                   # needed to push from this machine
 gh repo clone Hazihell/hangar ~/.agents
-~/.agents/bin/hangar install    # system packages, Claude Code, Codex, T3 Code (nightly), service
+~/.agents/bin/hangar install    # system packages, gh, tea, Claude Code, Codex, T3 Code (nightly), service
 # install Node; with nvm, put its lines in ~/.profile so T3 Code can see it
 claude                          # sign in, then /exit
 t3 connect                      # link the machine to your T3 account
