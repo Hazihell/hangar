@@ -93,8 +93,8 @@ Responses: `204` accepted; `400` malformed; `404` Machine not in the list.
         "processes": 20, "maxTargets": 200,
         "usage": {
           "cpu": { "high": 80, "hot": 90 },
-          "ram": { "high": 80, "hot": 90 },
-          "disk": { "high": 80, "hot": 90 }
+          "ram": { "high": 85, "hot": 90 },
+          "disk": { "high": 85, "hot": 90 }
         }
       },
       "attention": [],
@@ -133,7 +133,7 @@ Responses: `204` accepted; `400` malformed; `404` Machine not in the list.
 - `lastSeen` and `usage` are `null` for a Machine that has never reported.
 - `usage.temps`: the latest report's `temps`; absent when it had none.
 - `limits`: server-owned policy, present on every Machine, also on events. `vpnMs`, `powerMs` and `updateMs` are command lifetimes in milliseconds; the page uses them for optimistic VPN state and the Sleep/Shut down/restart overlay. `processes` is the per-App display cap; `maxTargets` is the largest explicit Quit target list the server accepts (App-by-name Quit still resolves all of its Processes). These values come from the same constants the server enforces.
-- `limits.usage`: percent display thresholds for CPU/RAM/disk, each `{ high, hot }`. The existing look is preserved: `high` stays 80 (or `hot` if lower), `hot` comes from that Alert rule's `at` (90 by default). The page classifies the rounded displayed percent. These are display levels, not active Alert decisions: `clear` still controls Alert hysteresis. Temperature keeps using `tempLimits`.
+- `limits.usage`: percent display thresholds for CPU/RAM/disk, each `{ high, hot }`. As for `tempLimits`, `high` is that Alert rule's `clear` and `hot` its `at` (80/90 for CPU, 85/90 for RAM and disk by default). The page classifies the rounded displayed percent. These are display levels, not active Alert decisions. Temperature keeps using `tempLimits`.
 - `attention`: active Alert conditions for this Machine, `{ tag, title, body }[]`, or `[]`. The banner renders these server-owned titles and bodies; text describes when the current occurrence began. It follows the same evaluator as push delivery: sustained periods, exact unrounded comparisons, hysteresis, enabled rules, VPN intent and startup/resume grace. Cooldown mutes push delivery, but active conditions remain in this list. Evaluation and durable attention work even when push keys are unusable or nobody subscribed. A new occurrence or a clear sends a Machine event even if no report arrived. Offline status remains visible on each Machine independently of whether Offline is an enabled Alert.
 - `tempLimits`: `{ "high", "hot" }` in °C, this Machine's temperature Alert thresholds (`high` is `temp.clear`, `hot` is `temp.at`, with its `machines` override applied), for coloring the reading; `null` when the temperature Alert is off.
 - `vpns`: the latest known VPNs, `[]` if none. A report omitting `vpns` keeps the previous list. `pending` is `{ "action": "connect" | "disconnect", "since": "<iso>" }` while a command is under way, else `null`. `error` is `{ "message": "...", "at": "<iso>" }` when the last command failed, else `null`.

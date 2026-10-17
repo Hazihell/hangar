@@ -117,8 +117,8 @@ test('an Alert saved before attention existed still lists, with its newest notif
   assert.deepEqual(evaluator.attention('pc'), [{ tag: 'pc:t3', title: 'T3 service stopped on PC', body: 'It is not running any more' }]);
 });
 
-test('usageLimits: the page calls 80 % high and the rule\'s `at` hot, whatever `clear` is', () => {
-  assert.deepEqual(usageLimits(DEFAULT_RULES), { cpu: { high: 80, hot: 90 }, ram: { high: 80, hot: 90 }, disk: { high: 80, hot: 90 } });
+test('usageLimits: the page calls the rule\'s `clear` high and its `at` hot', () => {
+  assert.deepEqual(usageLimits(DEFAULT_RULES), { cpu: { high: 80, hot: 90 }, ram: { high: 85, hot: 90 }, disk: { high: 85, hot: 90 } });
   const own = rules({ cpu: { at: 95, clear: 10, for: 60 }, ram: { at: 70, clear: 60, for: 60 }, disk: { at: 85, clear: 84 } });
-  assert.deepEqual(usageLimits(own), { cpu: { high: 80, hot: 95 }, ram: { high: 70, hot: 70 }, disk: { high: 80, hot: 85 } });
+  assert.deepEqual(usageLimits(own), { cpu: { high: 10, hot: 95 }, ram: { high: 60, hot: 70 }, disk: { high: 84, hot: 85 } });
 });

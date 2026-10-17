@@ -88,7 +88,6 @@ export const RETRY_FOR = 10 * 60_000;
 /** Samples further apart than this don't make one CPU/RAM streak (a restart, sleep or Offline in between). */
 export const MAX_GAP = 60_000;
 /** The share of CPU, RAM or disk the page starts to call high. */
-const HIGH = 80;
 /** A Machine is Offline this long after its last report. */
 const ONLINE_FOR = 30_000;
 
@@ -109,10 +108,10 @@ export function tempLimits(rules: Rules, machine: string): LevelLimits | null {
   return { high: clear, hot: at };
 }
 
-/** Where the page colors a Machine's CPU, RAM or disk `high`, and where it reads `hot`. `high` is a fixed visual policy (it never goes above `hot`); `hot` is where the Alert fires, and neither depends on `clear`. */
+/** What the page colors a Machine's CPU, RAM and disk by, as for its temperature: `high` is where the Alert clears, `hot` where it fires. */
 export function usageLimits(rules: Rules): MachineLimits['usage'] {
-  const limit = (hot: number) => ({ high: Math.min(HIGH, hot), hot });
-  return { cpu: limit(rules.cpu.at), ram: limit(rules.ram.at), disk: limit(rules.disk.at) };
+  const limit = ({ at, clear }: { at: number; clear: number }) => ({ high: clear, hot: at });
+  return { cpu: limit(rules.cpu), ram: limit(rules.ram), disk: limit(rules.disk) };
 }
 
 /** Throws a message naming the first thing wrong with `rules`. */

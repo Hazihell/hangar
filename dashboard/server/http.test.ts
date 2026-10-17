@@ -23,7 +23,7 @@ test('HTTP accepts reports, rejects unknown Machines, and streams Usage', async 
   assert.equal((await post({ ...report, at: "untrusted client clock" })).status, 204);
   const body = await (await fetch(base + '/api/machines')).json();
   assert.equal(body.now, '1970-01-01T00:02:00.001Z');
-  assert.deepEqual(body.machines[0], { id: 'pc', name: 'PC', os: 'windows', apps: null, online: true, lastSeen: body.now, usage: { at: body.now, cpu: 10, ram: report.ram, disks: report.disks, services: report.services }, vpns: [], power: { actions: ['sleep', 'shutdown'], pending: null, error: null }, updates: { checkedAt: null, checking: false, items: [], pending: null, error: null }, tempLimits: { high: 75, hot: 85 }, attention: [], limits: { vpnMs: 90_000, powerMs: 120_000, updateMs: 900_000, processes: 20, maxTargets: 200, usage: { cpu: { high: 80, hot: 90 }, ram: { high: 80, hot: 90 }, disk: { high: 80, hot: 90 } } }, history: [{ t: '1970-01-01T00:02:00.000Z', cpu: 10, ram: 75, disk: 50, temp: null }] });
+  assert.deepEqual(body.machines[0], { id: 'pc', name: 'PC', os: 'windows', apps: null, online: true, lastSeen: body.now, usage: { at: body.now, cpu: 10, ram: report.ram, disks: report.disks, services: report.services }, vpns: [], power: { actions: ['sleep', 'shutdown'], pending: null, error: null }, updates: { checkedAt: null, checking: false, items: [], pending: null, error: null }, tempLimits: { high: 75, hot: 85 }, attention: [], limits: { vpnMs: 90_000, powerMs: 120_000, updateMs: 900_000, processes: 20, maxTargets: 200, usage: { cpu: { high: 80, hot: 90 }, ram: { high: 85, hot: 90 }, disk: { high: 85, hot: 90 } } }, history: [{ t: '1970-01-01T00:02:00.000Z', cpu: 10, ram: 75, disk: 50, temp: null }] });
   const event = new TextDecoder().decode((await reader.read()).value);
   assert.match(event, /^event: machine\ndata: /);
   const payload = JSON.parse(event.split('data: ')[1].trim());
@@ -128,7 +128,7 @@ test('snapshots and events carry policy and Alert attention, including hysteresi
   await post(96, 94);
   let value = await snapshot();
   assert.deepEqual(value.attention, [], 'CPU duration not reached, disk below configured threshold');
-  assert.deepEqual(value.limits, { vpnMs: 90_000, powerMs: 120_000, updateMs: 900_000, processes: 20, maxTargets: 200, usage: { cpu: { high: 80, hot: 90 }, ram: { high: 80, hot: 90 }, disk: { high: 80, hot: 95 } } });
+  assert.deepEqual(value.limits, { vpnMs: 90_000, powerMs: 120_000, updateMs: 900_000, processes: 20, maxTargets: 200, usage: { cpu: { high: 80, hot: 90 }, ram: { high: 85, hot: 90 }, disk: { high: 85, hot: 95 } } });
   await reader.read();
   now += 5000;
   app.tick();
