@@ -12,6 +12,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
+import { useMachineCommand } from "@/hooks/use-machine-command"
 import { useStoredFlag } from "@/hooks/use-stored-flag"
 import { formatAbsolute, formatRelative } from "@/lib/format"
 import type { Machine, T3Thread, Update, Updates } from "@/lib/types"
@@ -22,94 +23,32 @@ import {
   outOfDate,
   runsDashboard,
   sendUpdate,
-  UpdateCommandError,
   updatable,
   versions,
 } from "@/lib/updates"
 import { cn } from "@/lib/utils"
 
-/** After the server takes a command, how long we wait for its event to show it. */
-const ACK_GRACE_MS = 5_000
-/** How long a refused command's message stays. */
-const REFUSAL_MS = 8_000
-
-type Attempt = { id: number; items: string[]; errorBefore: string | null }
-
-/**
- * Sends updates for one Machine and works out what's under way: the server's
- * pending update, or, from the click until the server shows it, ours.
- */
+/** Stands in for the pending Update until its Machine event arrives. */
 function useUpdateCommand(machine: Machine, updates: Updates, onSent?: (items: string[]) => void) {
-  const [attempt, setAttempt] = useState<Attempt | null>(null)
-  const [refusal, setRefusal] = useState<{ id: number; message: string } | null>(null)
-  const nextId = useRef(0)
-  const timers = useLater()
-
-  const retired =
-    attempt !== null &&
-    (updates.pending !== null || (updates.error !== null && updates.error.at !== attempt.errorBefore))
-  if (retired) setAttempt(null)
-
-  async function run(items: string[]) {
-    const id = ++nextId.current
-    setRefusal(null)
-    setAttempt({ id, items, errorBefore: updates.error?.at ?? null })
-    try {
-      await sendUpdate(machine.id, items)
-      onSent?.(items)
-      timers.later(() => setAttempt((a) => (a?.id === id ? null : a)), ACK_GRACE_MS)
-    } catch (error) {
-      setAttempt((a) => (a?.id === id ? null : a))
-      if (nextId.current !== id) return
-      setRefusal({ id, message: error instanceof UpdateCommandError ? error.message : "The update couldn’t be sent." })
-      timers.later(() => setRefusal((r) => (r?.id === id ? null : r)), REFUSAL_MS)
-    }
-  }
-
-  const pending = updates.pending?.items ?? (retired ? null : (attempt?.items ?? null))
-  const error = pending ? null : (refusal?.message ?? updates.error?.message ?? null)
-  return { pending, since: updates.pending?.since ?? null, error, run }
+  const command = useMachineCommand({
+    send: (items: string[]) => sendUpdate(machine.id, items),
+    seen: () => updates.pending !== null,
+    errorAt: updates.error?.at,
+    fallback: "The update couldn’t be sent.",
+    onSent,
+  })
+  const pending = updates.pending?.items ?? command.pending
+  return { pending, since: updates.pending?.since ?? null, error: pending ? null : command.refusal?.message ?? updates.error?.message ?? null, run: command.run }
 }
 
-/** "Check now": checking from the click until the server says it is (or a moment passes). */
+/** Shows checking from the click until the Machine reports it. */
 function useCheck(machine: Machine, updates: Updates) {
-  const [sent, setSent] = useState<number | null>(null)
-  const [refusal, setRefusal] = useState<string | null>(null)
-  const nextId = useRef(0)
-  const timers = useLater()
-  if (sent !== null && updates.checking) setSent(null)
-
-  async function run() {
-    const id = ++nextId.current
-    setRefusal(null)
-    setSent(id)
-    try {
-      await checkNow(machine.id)
-      timers.later(() => setSent((s) => (s === id ? null : s)), ACK_GRACE_MS)
-    } catch (error) {
-      setSent((s) => (s === id ? null : s))
-      setRefusal(error instanceof UpdateCommandError ? error.message : "The check couldn’t be started.")
-      timers.later(() => setRefusal(null), REFUSAL_MS)
-    }
-  }
-  return { checking: updates.checking || sent !== null, refusal, run }
-}
-
-function useLater() {
-  const timers = useRef(new Set<ReturnType<typeof setTimeout>>())
-  useEffect(() => {
-    const t = timers.current
-    return () => t.forEach(clearTimeout)
-  }, [])
-  return {
-    later(fn: () => void, ms: number) {
-      const timer = setTimeout(() => {
-        timers.current.delete(timer)
-        fn()
-      }, ms)
-      timers.current.add(timer)
-    },
-  }
+  const command = useMachineCommand<void, void>({
+    send: () => checkNow(machine.id),
+    seen: () => updates.checking,
+    fallback: "The check couldn’t be started.",
+  })
+  return { checking: updates.checking || command.pending !== null, refusal: command.refusal?.message ?? null, run: () => command.run() }
 }
 
 /**

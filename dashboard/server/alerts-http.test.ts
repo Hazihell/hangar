@@ -37,10 +37,10 @@ function device(name: string) {
 
 type Call = { url: string; headers: Record<string, string>; body: Buffer };
 
-type Options = { dir?: string; now?: number; status?: (url: string, call: number) => number; gate?: (url: string, nth: number) => Promise<void> | undefined; rules?: typeof rules };
+type Options = { dir?: string; now?: number; status?: (url: string, call: number) => number; gate?: (url: string, nth: number) => Promise<void> | undefined; rules?: typeof rules; exec?: Parameters<typeof createDashboard>[0]['exec'] };
 const until = async (condition: () => boolean) => { for (let i = 0; i < 200 && !condition(); i++) await new Promise(resolve => setTimeout(resolve, 5)); assert.ok(condition(), 'timed out'); };
 
-async function fixture(t: any, { dir = mkdtempSync(join(tmpdir(), 'hangar-alerts-')), now: start = 120_000, status = () => 201, gate, rules: own = rules }: Options = {}) {
+async function fixture(t: any, { dir = mkdtempSync(join(tmpdir(), 'hangar-alerts-')), now: start = 120_000, status = () => 201, gate, rules: own = rules, exec = (_f, _a, _o, done) => { void done; } }: Options = {}) {
   let now = start;
   const calls: Call[] = [];
   const fetch = async (url: string, init: any) => {
@@ -49,7 +49,7 @@ async function fixture(t: any, { dir = mkdtempSync(join(tmpdir(), 'hangar-alerts
     await gate?.(url, nth);
     return { status: status(url, call), ok: status(url, call) < 300 };
   };
-  const app = createDashboard({ db: join(dir, 'test.db'), machines, collect: false, clock: () => now, dist: join(dir, 'missing'), rules: own, fetch, exec: (_f, _a, _o, done) => { void done; } });
+  const app = createDashboard({ db: join(dir, 'test.db'), machines, collect: false, clock: () => now, dist: join(dir, 'missing'), rules: own, fetch, exec });
   await new Promise<void>(resolve => app.server.listen(0, '127.0.0.1', resolve));
   t.after(() => app.server.listening ? app.close() : undefined);
   const base = `http://127.0.0.1:${(app.server.address() as any).port}`;
@@ -171,6 +171,20 @@ test('a Dashboard VPN disconnect, through the real POST and report flow, sends n
   await f.app.idle();
   assert.equal(f.calls.length, 1);
   assert.deepEqual(phone.decrypt(f.calls[0].body), { title: 'Steeprock dropped on Mac', body: 'The VPN disconnected on its own', tag: 'mac:vpn:Steeprock', machine: 'mac', quiet: false });
+});
+
+test('a Dashboard VPN disconnect whose command fails at once is still no drop when the report shows it disconnected', async t => {
+  const f = await fixture(t, { exec: () => { throw new Error('spawn failed'); } });
+  for (let i = 0; i < 36; i++) { f.advance(5000); f.app.tick(); }
+  t.after(() => rmSync(f.dir, { recursive: true }));
+  await f.json('POST', '/api/alerts/subscriptions', device('phone').subscription);
+  const mac = (status: string) => f.report({ machine: 'mac', vpns: [{ name: 'Steeprock', status, kind: 'ppp' }] });
+  await mac('connected');
+  f.advance(10_000);
+  assert.equal((await f.json('POST', '/api/machines/mac/vpns/Steeprock', { action: 'disconnect' })).status, 202);
+  f.advance(10_000); await mac('disconnected');
+  await f.app.idle();
+  assert.deepEqual(f.calls, [], 'the Alerts saw the disconnect pending before the command failed');
 });
 
 test('a restart on the same database neither repeats nor forgets Alerts, and a new device hears of the active ones', async t => {

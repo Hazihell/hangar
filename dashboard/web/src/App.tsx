@@ -33,9 +33,6 @@ type Sent = {
   dropped: boolean
 }
 
-/** A command nothing confirmed is forgotten after this (the server gives up at 2 min, or 15 for an update). */
-const LIMIT_MS: Record<Going, number> = { sleep: 3 * 60_000, shutdown: 3 * 60_000, restart: 17 * 60_000 }
-
 /** Whether the server shows it under way on that Machine. */
 function pendingOf(m: Machine | undefined, going: Going): boolean {
   if (!m) return false
@@ -58,6 +55,7 @@ export default function App() {
   // means it went, not that something broke.
   const down = connection === "reconnecting" || connection === "unreachable"
   const sentTo = sent ? machines?.find((m) => m.id === sent.id) : undefined
+  const sentLimit = sent?.going === "restart" ? sentTo?.limits?.updateMs : sentTo?.limits?.powerMs
   const sentPending = sent !== null && pendingOf(sentTo, sent.going)
   if (sent && down && !sent.dropped) setSent({ ...sent, dropped: true })
   else if (sent && !down && sentPending && !sent.seenPending) setSent({ ...sent, seenPending: true })
@@ -69,7 +67,7 @@ export default function App() {
     ((sent.dropped && connection === "live") ||
       (sent.seenPending && !sentPending) ||
       (errorOf(sentTo, sent.going) !== null && errorOf(sentTo, sent.going) !== sent.errorBefore) ||
-      (!sent.dropped && now - skew - sent.at > LIMIT_MS[sent.going]))
+      (!sent.dropped && sentLimit !== undefined && now - skew - sent.at > sentLimit))
   ) {
     setSent(null)
     // Back from restarting after an update: load the new Dashboard. A server

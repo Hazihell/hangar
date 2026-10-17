@@ -1,7 +1,8 @@
 import { spawn, execFile } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
-import { validReport } from './rules.ts';
+import type { Process } from './rules.ts';
+import { acceptReport } from './usage.ts';
 import { createProcCollector } from './proc.ts';
 export const collectorPids = new Set<number>();
 // Kept as a script fragment so collector behavior can be exercised with stubbed OS results.
@@ -94,53 +95,116 @@ while ($true) {
 }`;
 const nvidiaSmi = '/usr/lib/wsl/lib/nvidia-smi';
 /** The first GPU's degrees Celsius from `nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader,nounits`. */
-export function gpuTemperature(output: string) {
+function gpuTemperature(output: string) {
   const first = output.split('\n')[0].trim();
   return /^-?\d+(\.\d+)?$/.test(first) ? Number(first) : undefined;
 }
-export function reportFromLine(line: string, machine: string, t3: boolean, gpu?: number) {
+function reportFromLine(line: string, machine: string, t3: boolean, gpu?: number) {
   const value = JSON.parse(line.replace(/^\uFEFF/, ''));
   const temps = { ...value.temps, ...(gpu === undefined ? {} : { gpu }) };
-  const report = { ...value, machine, services: { t3 }, ...(Object.keys(temps).length ? { temps } : {}),
-    disks: Array.isArray(value.disks) ? value.disks.filter((d: any) => d.total !== 0) : value.disks };
-  if (!validReport(report)) throw new Error('invalid Usage');
+  const report = acceptReport({ ...value, machine, services: { t3 }, ...(Object.keys(temps).length ? { temps } : {}),
+    disks: Array.isArray(value.disks) ? value.disks.filter((d: any) => d.total !== 0) : value.disks });
+  if (!report) throw new Error('invalid Usage');
   return report;
 }
 /** A command's output, or null if it is missing, fails or takes over 3 s. */
 const probe = (file: string, args: string[]) => new Promise<string | null>(resolve => execFile(file, args, { timeout: 3000, encoding: 'utf8' }, (error, stdout) => resolve(error ? null : stdout)));
-export function startCollector(machine: string, intake: (report: unknown) => number) {
-  let stopped = false, child: ReturnType<typeof spawn> | undefined, timer: ReturnType<typeof setTimeout> | undefined, delay = 1000;
-  try { if (!/microsoft/i.test(readFileSync('/proc/version', 'utf8'))) return () => {}; } catch { return () => {}; }
-  let logicalCpus = 1;
-  const sampleProc = createProcCollector({ cpus: () => logicalCpus });
+type ReporterEvents = { line: (line: string) => void; error: (message: string) => void; close: () => void };
+export type CollectorProcess = {
+  available: () => boolean;
+  start: (events: ReporterEvents) => () => void;
+  probe: (file: string, args: string[]) => Promise<string | null>;
+  createSampler: (cpus: () => number) => () => Process[];
+};
+export type CollectorClock = {
+  now: () => number;
+  after: (ms: number, run: () => void) => () => void;
+  every: (ms: number, run: () => void) => () => void;
+};
+const realProcess: CollectorProcess = {
+  available: () => {
+    try { return /microsoft/i.test(readFileSync('/proc/version', 'utf8')); } catch { return false; }
+  },
+  start: events => {
+    const child = spawn('/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const lines = createInterface({ input: child.stdout });
+    lines.on('line', events.line);
+    child.stderr.on('data', data => events.error(String(data).trim()));
+    child.on('error', error => events.error(error.message));
+    child.once('close', () => { lines.close(); events.close(); });
+    return () => { lines.close(); child.kill(); };
+  },
+  probe,
+  createSampler: cpus => createProcCollector({ cpus }),
+};
+const clock: CollectorClock = {
+  now: () => Date.now(),
+  after: (ms, run) => { const timer = setTimeout(run, ms); return () => clearTimeout(timer); },
+  every: (ms, run) => { const timer = setInterval(run, ms); return () => clearInterval(timer); },
+};
+/** Reports reach intake in line order, after both probes. Stop discards pending reports. */
+export function startCollector(machine: string, intake: (report: unknown) => number,
+  options: { process?: CollectorProcess; clock?: CollectorClock } = {}) {
+  const os = options.process ?? realProcess, time = options.clock ?? clock;
+  if (!os.available()) return () => {};
+  let stopped = false, cancelRestart: (() => void) | undefined, delay = 1000, logicalCpus = 1;
+  let session: { active: boolean; kill: () => void; cancelWatchdog: () => void } | undefined;
+  const sampleProc = os.createSampler(() => logicalCpus);
   try { sampleProc(); } catch (error) { console.error('WSL collector:', error); }
   function launch() {
-    const current = child = spawn('/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { stdio: ['ignore', 'pipe', 'pipe'] });
-    let lastValid = Date.now();
-    const watchdog = setInterval(() => {
-      if (Date.now() - lastValid >= 45_000) { console.error('Windows collector: no valid report for 45 seconds; restarting'); current.kill(); }
-    }, 5000);
-    const lines = createInterface({ input: current.stdout! });
-    lines.on('line', line => {
-      try {
-        const value = JSON.parse(line.replace(/^\uFEFF/, ''));
-        if (Number.isSafeInteger(value.collectorPid) && value.collectorPid > 0) { collectorPids.add(value.collectorPid); if (Number.isSafeInteger(value.logicalCpus) && value.logicalCpus > 0) logicalCpus = value.logicalCpus; return; }
-      } catch { /* Report parsing below provides the diagnostic. */ }
-      Promise.all([probe('systemctl', ['--user', 'is-active', '--quiet', 't3code.service']), probe(nvidiaSmi, ['--query-gpu=temperature.gpu', '--format=csv,noheader,nounits'])]).then(([service, smi]) => {
-        if (stopped || current !== child || current.exitCode !== null || current.killed) return;
+    const current: NonNullable<typeof session> = { active: true, kill: () => {}, cancelWatchdog: () => {} };
+    session = current;
+    let lastValid = time.now(), pending = Promise.resolve();
+    function retire() {
+      current.active = false;
+      current.cancelWatchdog();
+      collectorPids.clear();
+    }
+    current.cancelWatchdog = time.every(5000, () => {
+      if (time.now() - lastValid >= 45_000) {
+        console.error('Windows collector: no valid report for 45 seconds; restarting');
+        retire();
+        current.kill();
+      }
+    });
+    current.kill = os.start({
+      line: line => {
+        if (stopped || !current.active) return;
         try {
+          const value = JSON.parse(line.replace(/^\uFEFF/, ''));
+          if (Number.isSafeInteger(value.collectorPid) && value.collectorPid > 0) {
+            collectorPids.add(value.collectorPid);
+            if (Number.isSafeInteger(value.logicalCpus) && value.logicalCpus > 0) logicalCpus = value.logicalCpus;
+            return;
+          }
+        } catch { /* Report parsing below provides the diagnostic. */ }
+        const probes = Promise.all([
+          os.probe('systemctl', ['--user', 'is-active', '--quiet', 't3code.service']).catch(() => null),
+          os.probe(nvidiaSmi, ['--query-gpu=temperature.gpu', '--format=csv,noheader,nounits']).catch(() => null),
+        ]);
+        pending = pending.then(async () => {
+          const [service, smi] = await probes;
+          if (stopped || !current.active) return;
           const report = reportFromLine(line, machine, service !== null, smi === null ? undefined : gpuTemperature(smi));
           try { report.wsl = sampleProc(); } catch (error) { console.error('WSL collector:', error); }
           const result = intake(report);
           if (result !== 204) console.error('Windows collector: report rejected:', result);
-          else { lastValid = Date.now(); delay = 1000; }
-        } catch (error) { console.error('Windows collector:', error); }
-      });
+          else { lastValid = time.now(); delay = 1000; }
+        }).catch(error => console.error('Windows collector:', error));
+      },
+      error: message => { if (!stopped) console.error('Windows collector:', message); },
+      close: () => {
+        retire();
+        if (!stopped) { cancelRestart = time.after(delay, launch); delay = Math.min(delay * 2, 60_000); }
+      },
     });
-    current.stderr!.on('data', data => console.error('Windows collector:', String(data).trim()));
-    current.on('error', error => console.error('Windows collector:', error.message));
-    current.once('close', () => { clearInterval(watchdog); collectorPids.clear(); lines.close(); if (!stopped) { timer = setTimeout(launch, delay); delay = Math.min(delay * 2, 60_000); } });
   }
   launch();
-  return () => { stopped = true; clearTimeout(timer); child?.kill(); };
+  return () => {
+    if (stopped) return;
+    stopped = true;
+    cancelRestart?.();
+    if (session) { session.active = false; session.cancelWatchdog(); session.kill(); }
+    collectorPids.clear();
+  };
 }

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { useRef, useState } from "react"
 
 import {
   AlertDialog,
@@ -11,9 +11,10 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
+import { useMachineCommand } from "@/hooks/use-machine-command"
 import type { Machine, Vpn, VpnAction, VpnStatus } from "@/lib/types"
 import { cn } from "@/lib/utils"
-import { sendVpnCommand, targetOf, VpnCommandError } from "@/lib/vpn"
+import { sendVpnCommand, targetOf } from "@/lib/vpn"
 
 const STATUS_WORDS: Record<VpnStatus, string> = {
   connected: "Connected",
@@ -26,11 +27,6 @@ const BUSY_WORDS: Record<VpnAction, string> = {
   connect: "Connecting…",
   disconnect: "Disconnecting…",
 }
-
-/** The server forgets a command after 90 s; ours lapses a little later. */
-const OPTIMISTIC_MS = 100_000
-/** How long a refused command's message stays on the row. */
-const REFUSAL_MS = 8_000
 
 /** A Machine's VPNs, each with a Connect or Disconnect button. Nothing when it has none. */
 export function VpnList({ machine, muted, locked }: {
@@ -50,81 +46,26 @@ export function VpnList({ machine, muted, locked }: {
   )
 }
 
-/** A command this page sent, until the server takes it over or it ends. */
-type Attempt = { id: number; action: VpnAction; errorBefore: string | null }
-
-/**
- * Sends commands for one VPN and works out what's under way: the server's
- * pending command, or, from the click until the server acknowledges it, the
- * one we just sent (optimistic). Each click is an attempt with its own id;
- * a request's failure or a timer only counts while its attempt is current.
- */
-function useVpnCommand(machineId: string, vpn: Vpn) {
-  const [attempt, setAttempt] = useState<Attempt | null>(null)
-  const [refusal, setRefusal] = useState<{ id: number; message: string } | null>(null)
-  // The last command sent from this page, to say which one an error is about.
+/** Tracks one VPN command until its Machine event shows pending, success or failure. */
+function useVpnCommand(machine: Machine, vpn: Vpn) {
   const [last, setLast] = useState<VpnAction | null>(null)
-  const nextId = useRef(0)
-  // The attempt whose request may still change the row; null once it's retired.
-  const current = useRef<number | null>(null)
-  const timers = useRef(new Set<ReturnType<typeof setTimeout>>())
-
-  useEffect(() => {
-    const t = timers.current
-    return () => t.forEach(clearTimeout)
-  }, [])
-
-  // Retired as soon as the server shows it: its own pending command (from then
-  // on the server rules, even if it later forgets the command), the target
-  // reached, or a new error.
-  const retired =
-    attempt !== null &&
-    (vpn.pending?.action === attempt.action ||
-      vpn.status === targetOf(attempt.action) ||
-      (vpn.error !== null && vpn.error.at !== attempt.errorBefore))
-  if (retired) setAttempt(null)
-
-  useEffect(() => {
-    // An attempt retired (or none sent): late answers to it change nothing.
-    if (attempt === null) current.current = null
-  }, [attempt])
-
-  const pending: VpnAction | null = vpn.pending?.action ?? (retired ? null : (attempt?.action ?? null))
-
-  function later(fn: () => void, ms: number) {
-    const timer = setTimeout(() => {
-      timers.current.delete(timer)
-      fn()
-    }, ms)
-    timers.current.add(timer)
+  const command = useMachineCommand({
+    send: (action: VpnAction) => sendVpnCommand(machine.id, vpn.name, action),
+    seen: (action) => vpn.pending?.action === action || vpn.status === targetOf(action),
+    errorAt: vpn.error?.at,
+    fallback: "The command couldn’t be sent.",
+    optimisticMs: machine.limits?.vpnMs ?? null,
+  })
+  const message = command.refusal?.message ?? vpn.error?.message ?? null
+  return {
+    pending: vpn.pending?.action ?? command.pending,
+    error: message && { lead: last ? `Couldn’t ${last}.` : "The last command failed.", message },
+    run: (action: VpnAction) => { setLast(action); return command.run(action) },
   }
-
-  async function run(action: VpnAction) {
-    const id = ++nextId.current
-    current.current = id
-    setRefusal(null)
-    setLast(action)
-    setAttempt({ id, action, errorBefore: vpn.error?.at ?? null })
-    later(() => setAttempt((a) => (a?.id === id ? null : a)), OPTIMISTIC_MS)
-    try {
-      await sendVpnCommand(machineId, vpn.name, action)
-    } catch (error) {
-      // Superseded by a newer click, or already settled by the server: ignore.
-      if (current.current !== id) return
-      current.current = null
-      setAttempt((a) => (a?.id === id ? null : a))
-      setRefusal({ id, message: error instanceof VpnCommandError ? error.message : "The command couldn’t be sent." })
-      later(() => setRefusal((r) => (r?.id === id ? null : r)), REFUSAL_MS)
-    }
-  }
-
-  const message = refusal?.message ?? vpn.error?.message ?? null
-  const error = message && { lead: last ? `Couldn’t ${last}.` : "The last command failed.", message }
-  return { pending, error, run }
 }
 
 function VpnRow({ machine, vpn, muted, locked }: { machine: Machine; vpn: Vpn; muted: boolean; locked: string | null }) {
-  const { pending, error: lastError, run } = useVpnCommand(machine.id, vpn)
+  const { pending, error: lastError, run } = useVpnCommand(machine, vpn)
   // A new command supersedes the last one's error.
   const error = pending ? null : lastError
   const [confirming, setConfirming] = useState(false)

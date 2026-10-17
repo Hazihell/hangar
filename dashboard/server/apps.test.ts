@@ -1,27 +1,27 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildApps, mayQuit } from './apps.ts';
-import { validReport, validQuit } from './rules.ts';
+import { buildApps } from './apps.ts';
+import { mayQuit } from './quit.ts';
+import { validQuit } from './rules.ts';
 import { Store } from './store.ts';
+import { Usage, acceptReport } from './usage.ts';
 const pc = { id: 'pc', name: 'PC', os: 'windows', collector: 'wsl' };
 const mac = { id: 'mac', name: 'Mac', os: 'macos', collector: 'mac' };
 const p = { pid: 10, name: 'chrome.exe', app: 'Chrome', cpu: 5, ram: 100, started: 'token', own: true };
 const report = { machine: 'pc', cpu: 10, ram: { used: 1, total: 2 }, disks: [] };
 test('Process validation bounds lists, identity, usage and optional reporter PID', () => {
-  assert.ok(validReport({ ...report, processes: [p], wsl: [p], reporterPid: 1 }));
+  assert.ok(acceptReport({ ...report, processes: [p], wsl: [p], reporterPid: 1 }));
   for (const patch of [{ pid: 0 }, { pid: 1.5 }, { name: '' }, { name: 'x\u0085' }, { app: 'x'.repeat(257) }, { cpu: 101 }, { cpu: NaN }, { ram: -1 }, { started: 'x'.repeat(65) }, { own: 1 }]) {
     for (const key of ['processes', 'wsl']) {
       const input = { ...report, [key]: [{ ...p, ...patch }] };
-      assert.equal(validReport(input), true);
-      assert.deepEqual(input[key], []);
+      assert.deepEqual(acceptReport(input)?.[key as 'processes' | 'wsl'], []);
       const mixed = { ...report, [key]: [p, { ...p, ...patch }] };
-      assert.equal(validReport(mixed), true);
-      assert.deepEqual(mixed[key], [p]);
+      assert.deepEqual(acceptReport(mixed)?.[key as 'processes' | 'wsl'], [p]);
     }
   }
-  assert.ok(validReport({ ...report, processes: Array(2000).fill(p) }));
-  assert.equal(validReport({ ...report, processes: Array(2001).fill(p) }), false);
-  assert.equal(validReport({ ...report, reporterPid: -1 }), false);
+  assert.ok(acceptReport({ ...report, processes: Array(2000).fill(p) }));
+  assert.equal(acceptReport({ ...report, processes: Array(2001).fill(p) }), null);
+  assert.equal(acceptReport({ ...report, reporterPid: -1 }), null);
   assert.ok(validQuit({ targets: [{ pid: 1, started: '‘; quote' }], force: false }));
   for (const value of [{ targets: [], force: false }, { targets: Array(201).fill({ pid: 1, started: '' }), force: false }, { targets: [{ pid: 1, started: '', where: 'mac' }], force: true }, { targets: [{ pid: 1, started: '' }] }]) assert.equal(validQuit(value), false);
 });
@@ -51,14 +51,14 @@ test('protection covers access, desktop, reporter, server ancestry and t3 MainPI
   assert.equal(mayQuit({ ...p, pid: 11 }, pc, 'wsl', { t3: 10 }), true);
 });
 test('minute Top Apps average missing Apps as zero, rank WSL together and prune with History', () => {
-  const store = new Store(':memory:', [pc]);
+  const store = new Store(':memory:'), usage = new Usage(store.db, [pc]);
   try {
-    store.intake({ ...report, processes: [p, { ...p, pid: 11, app: 'vmmemWSL', name: 'vmmemWSL' }], wsl: [{ ...p, app: 'node', cpu: 20 }] }, 1);
-    store.intake({ ...report, processes: [], wsl: [] }, 2);
-    assert.deepEqual(store.topApps('pc', '1970-01-01T00:00:00.000Z', 2), { t: '1970-01-01T00:00:00.000Z', apps: [{ name: 'node', where: 'wsl', cpu: 10, ram: 50 }, { name: 'Chrome', cpu: 2.5, ram: 50 }] });
-    assert.equal(store.topApps('pc', 'bad', 2), null);
-    assert.equal(store.topApps('pc', '1970-01-01T00:01:00.000Z', 2), null);
-    store.prune(86400001); assert.equal(store.topApps('pc', '1970-01-01T00:00:00.000Z', 86400001), null);
+    usage.intake({ ...report, processes: [p, { ...p, pid: 11, app: 'vmmemWSL', name: 'vmmemWSL' }], wsl: [{ ...p, app: 'node', cpu: 20 }] }, 1);
+    usage.intake({ ...report, processes: [], wsl: [] }, 2);
+    assert.deepEqual(usage.topApps('pc', '1970-01-01T00:00:00.000Z', 2), { t: '1970-01-01T00:00:00.000Z', apps: [{ name: 'node', where: 'wsl', cpu: 10, ram: 50 }, { name: 'Chrome', cpu: 2.5, ram: 50 }] });
+    assert.equal(usage.topApps('pc', 'bad', 2), null);
+    assert.equal(usage.topApps('pc', '1970-01-01T00:01:00.000Z', 2), null);
+    usage.prune(86400001); assert.equal(usage.topApps('pc', '1970-01-01T00:00:00.000Z', 86400001), null);
   } finally { store.close(); }
 });
 test('minute Top Apps persist across restart while live Apps remain in memory', async t => {
@@ -67,11 +67,11 @@ test('minute Top Apps persist across restart while live Apps remain in memory', 
   const { join } = await import('node:path');
   const dir = mkdtempSync(join(tmpdir(), 'hangar-apps-')); t.after(() => rmSync(dir, { recursive: true }));
   const file = join(dir, 'history.db');
-  let store = new Store(file, [pc]);
-  store.intake({ ...report, processes: [p] }, 1); store.close();
-  store = new Store(file, [pc]);
+  let store = new Store(file), usage = new Usage(store.db, [pc]);
+  usage.intake({ ...report, processes: [p] }, 1); store.close();
+  store = new Store(file); usage = new Usage(store.db, [pc]);
   try {
-    assert.equal(store.snapshot(pc, 2).apps, null);
-    assert.deepEqual(store.topApps('pc', '1970-01-01T00:00:00.000Z', 2)!.apps, [{ name: 'Chrome', cpu: 5, ram: 100 }]);
+    assert.equal(usage.snapshot(pc, 2).apps, null);
+    assert.deepEqual(usage.topApps('pc', '1970-01-01T00:00:00.000Z', 2)!.apps, [{ name: 'Chrome', cpu: 5, ram: 100 }]);
   } finally { store.close(); }
 });

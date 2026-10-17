@@ -1,5 +1,5 @@
 import { MoonIcon, PowerIcon } from "lucide-react"
-import { useEffect, useRef, useState } from "react"
+import { useRef, useState } from "react"
 
 import {
   AlertDialog,
@@ -13,14 +13,10 @@ import {
 } from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
-import { PENDING_WORDS, PowerCommandError, sendPower } from "@/lib/power"
+import { useMachineCommand } from "@/hooks/use-machine-command"
+import { PENDING_WORDS, sendPower } from "@/lib/power"
 import type { Machine, PowerAction } from "@/lib/types"
 import { cn } from "@/lib/utils"
-
-/** After the server takes a command, how long we wait for its event to show it pending. */
-const ACK_GRACE_MS = 5_000
-/** How long a refused command's message stays on the sheet. */
-const REFUSAL_MS = 8_000
 
 const VERBS: Record<PowerAction, string> = { sleep: "put it to sleep", shutdown: "shut it down" }
 
@@ -32,63 +28,21 @@ export type PowerState = {
   run: (action: PowerAction) => Promise<void>
 }
 
-/** A command this page sent, until the server shows it (or a grace period after it took it). */
-type Attempt = { id: number; action: PowerAction; errorBefore: string | null }
-
-/**
- * Sends Sleep and Shut down for one Machine and works out what's under way.
- * Like a VPN command: from the click until the server's event shows it
- * pending, our attempt stands in. `onSent` hears every command the server took.
- */
+/** Tracks Sleep or Shut down until its Machine event shows the command. */
 export function usePower(machine: Machine, onSent?: (action: PowerAction) => void): PowerState {
   const power = machine.power
-  const [attempt, setAttempt] = useState<Attempt | null>(null)
-  const [refusal, setRefusal] = useState<{ id: number; action: PowerAction; message: string } | null>(null)
-  const nextId = useRef(0)
-  const timers = useRef(new Set<ReturnType<typeof setTimeout>>())
-
-  useEffect(() => {
-    const t = timers.current
-    return () => t.forEach(clearTimeout)
-  }, [])
-
-  const retired =
-    attempt !== null &&
-    (power?.pending?.action === attempt.action || (power?.error != null && power.error.at !== attempt.errorBefore))
-  if (retired) setAttempt(null)
-
-  function later(fn: () => void, ms: number) {
-    const timer = setTimeout(() => {
-      timers.current.delete(timer)
-      fn()
-    }, ms)
-    timers.current.add(timer)
-  }
-
-  async function run(action: PowerAction) {
-    const id = ++nextId.current
-    setRefusal(null)
-    setAttempt({ id, action, errorBefore: power?.error?.at ?? null })
-    try {
-      await sendPower(machine.id, action)
-      onSent?.(action)
-      // From here the server rules; if its event is lost (it went to sleep first), let go.
-      later(() => setAttempt((a) => (a?.id === id ? null : a)), ACK_GRACE_MS)
-    } catch (error) {
-      setAttempt((a) => (a?.id === id ? null : a))
-      if (nextId.current !== id) return
-      setRefusal({ id, action, message: error instanceof PowerCommandError ? error.message : "The command couldn’t be sent." })
-      later(() => setRefusal((r) => (r?.id === id ? null : r)), REFUSAL_MS)
-    }
-  }
-
-  const pending = power?.pending?.action ?? (retired ? null : (attempt?.action ?? null))
-  const failed = refusal
-    ? `Couldn’t ${VERBS[refusal.action]}. ${refusal.message}`
-    : power?.error
-      ? sentenceAbout(machine.name, power.error.message, lastAction(power.error.message))
-      : null
-  return { pending, error: pending ? null : failed, run }
+  const command = useMachineCommand({
+    send: (action: PowerAction) => sendPower(machine.id, action),
+    seen: (action) => power?.pending?.action === action,
+    errorAt: power?.error?.at,
+    fallback: "The command couldn’t be sent.",
+    onSent,
+  })
+  const pending = power?.pending?.action ?? command.pending
+  const failed = command.refusal
+    ? `Couldn’t ${VERBS[command.refusal.input]}. ${command.refusal.message}`
+    : power?.error ? sentenceAbout(machine.name, power.error.message, lastAction(power.error.message)) : null
+  return { pending, error: pending ? null : failed, run: command.run }
 }
 
 /** The server's own message names the Machine; a bare one gets a lead. */

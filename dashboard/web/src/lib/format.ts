@@ -1,4 +1,4 @@
-import type { Disk } from "@/lib/types"
+import type { Disk, LevelLimits } from "@/lib/types"
 
 /** Narrow no-break space, between a number and its unit. */
 export const NNBSP = " "
@@ -39,14 +39,15 @@ export function formatPercent(value: number): string {
   return `${Math.round(value)}${NNBSP}%`
 }
 
-/** How full a percent reads: ordinary, high (80 %+) or nearly full (90 %+). */
+/** How full a percent reads: ordinary, high or nearly full, using the Machine’s policy. */
 export type Level = "ok" | "high" | "full"
 
-export function levelOf(value: number): Level {
+export function levelOf(value: number, limits: LevelLimits | undefined): Level {
+  if (!limits) return "ok"
   // Classify what formatPercent shows, so 89.6 reads "90 %" and "full".
   const shown = Math.round(value)
-  if (shown >= 90) return "full"
-  if (shown >= 80) return "high"
+  if (shown >= limits.hot) return "full"
+  if (shown >= limits.high) return "high"
   return "ok"
 }
 
@@ -55,7 +56,7 @@ export function formatTemp(celsius: number): string {
 }
 
 /** How hot a Temperature reads against the Machine's limits: like a percent's level, by what formatTemp shows. */
-export function tempLevelOf(celsius: number, limits: { high: number; hot: number } | null | undefined): Level {
+export function tempLevelOf(celsius: number, limits: LevelLimits | null | undefined): Level {
   if (!limits) return "ok"
   const shown = Math.round(celsius)
   if (shown >= limits.hot) return "full"

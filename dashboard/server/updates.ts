@@ -4,14 +4,8 @@ import type { Machine } from './store.ts';
 import type { Exec } from './vpn.ts';
 
 export const UPDATE_IDS = ['t3', 'claude', 'codex', 'gh', 'tea', 'hangar'] as const;
-export type Update = { id: string; name: string; current: string | null; latest: string | null; available: boolean; blocked: string | null; behind?: number | null };
-export type UpdatesState = {
-  checkedAt: string | null;
-  checking: boolean;
-  items: Update[];
-  pending: { items: string[]; since: string } | null;
-  error: { message: string; at: string } | null;
-};
+import type { Update, Updates as UpdatesState, T3Thread as Thread } from '../contract.ts';
+export type { Update, Updates as UpdatesState, T3Thread as Thread } from '../contract.ts';
 /**
  * execFile that can start the command as the leader of its own process group (`detached`), which execFile itself can't:
  * the group is how a timed-out updater and everything it started get stopped together. Output beyond `maxBuffer` drops
@@ -40,9 +34,9 @@ function failure(code: number | null, signal: NodeJS.Signals | null, killed: boo
   return code === 0 ? null : Object.assign(new Error('Command failed'), { code, signal, killed });
 }
 
-export type Thread = { title: string; status: string };
 
-const CHECK_TIMEOUT = 90_000, UPDATE_TIMEOUT = 15 * 60_000;
+const CHECK_TIMEOUT = 90_000;
+export const UPDATE_TIMEOUT = 15 * 60_000;
 const GRACE = 10_000, FIRST_CHECK = 60_000, EVERY = 6 * 3_600_000, RETRY = 10 * 60_000;
 const version = /^[0-9A-Za-z][0-9A-Za-z.+~_-]{0,63}$/;
 const plain = (value: string, max: number) => value.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/[\x00-\x1f\x7f-\x9f]/g, '').trim().slice(0, max);
@@ -179,7 +173,7 @@ export function createUpdates(options: { machines: Machine[]; exec: Exec; clock:
       if (closed) return;
       e.running = false; e.pid = null; e.stopped = undefined;   // the process is gone
       if (e.updateRun !== run) { recheck(machine); return; }   // it had timed out; it may have got somewhere before it died
-      finish(machine, e, error ? { message: error.killed ? 'Timed out after 15 minutes' : lastLine(stderr) || lastLine(stdout) || `Update failed (exit code ${Number.isInteger(error.code) ? error.code : 1})` } : null);
+      finish(machine, e, error ? { message: error.killed ? `Timed out after ${UPDATE_TIMEOUT / 60_000} minutes` : lastLine(stderr) || lastLine(stdout) || `Update failed (exit code ${Number.isInteger(error.code) ? error.code : 1})` } : null);
     };
     // The time limit is ours (see tick): execFile's would only stop the direct child.
     try {
@@ -196,7 +190,7 @@ export function createUpdates(options: { machines: Machine[]; exec: Exec; clock:
       if (e.running && e.stopped && !e.stopped.killed && now - e.stopped.at >= GRACE) { e.stopped.killed = true; signal(e, 'SIGKILL'); }
       if (pending && now - Date.parse(pending.since) >= UPDATE_TIMEOUT) {
         e.stopped = { at: now, killed: false }; signal(e, 'SIGTERM');
-        finish(machine, e, { message: 'Timed out after 15 minutes' }); continue;
+        finish(machine, e, { message: `Timed out after ${UPDATE_TIMEOUT / 60_000} minutes` }); continue;
       }
       if (options.schedule !== false && now >= e.due && !pending && reachable(machine) && options.online(machine)) check(machine);
     }

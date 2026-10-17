@@ -1,8 +1,8 @@
 import type { Machine } from './store.ts';
 import type { Exec } from './vpn.ts';
 
-type Action = 'sleep' | 'shutdown';
-type Power = { actions: Action[]; pending: { action: Action; since: string } | null; error: { message: string; at: string } | null };
+import type { PowerAction as Action, Power } from '../contract.ts';
+export const POWER_TIMEOUT = 120_000;
 type Command = { machine: Machine; value: Power; timer?: ReturnType<typeof setTimeout> };
 const suspend = "Add-Type -AssemblyName System.Windows.Forms; if (-not [System.Windows.Forms.Application]::SetSuspendState('Suspend', $false, $false)) { exit 1 }";
 
@@ -49,7 +49,7 @@ export function createPower(exec: Exec, clock: () => number, emit: (machine: Mac
   function tick(now: number) {
     for (const command of commands.values()) {
       const pending = command.value.pending;
-      if (!pending || now - Date.parse(pending.since) < 120_000) continue;
+      if (!pending || now - Date.parse(pending.since) < POWER_TIMEOUT) continue;
       clear(command);
       command.value.error = { message: pending.action === 'sleep' ? `${command.machine.name} didn't go to sleep` : `${command.machine.name} didn't shut down — an app may have blocked it`, at: new Date(now).toISOString() };
       emit(command.machine, now);

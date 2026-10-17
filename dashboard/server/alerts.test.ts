@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createAlerts, DEFAULT_RULES, loadRules, tempLimits, RETRY_EVERY, RETRY_FOR } from './alerts.ts';
+import { createAlertEvaluator as createAlerts, DEFAULT_RULES, loadRules, tempLimits, RETRY_EVERY, RETRY_FOR } from './alerts.ts';
 import type { Context, MachineView, Notification, Rules } from './alerts.ts';
 
 const S = 1000, MIN = 60_000;

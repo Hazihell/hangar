@@ -114,6 +114,36 @@ test('resume clears pending without error even when the command callback arrives
   assert.doesNotThrow(() => f.calls[1].done({ code: 1 }, '', 'closed'));
 });
 
+test('a rejected report is no evidence of a resume', async t => {
+  const f = await fixture(t); await f.report();
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  await f.post('pc'); t.mock.timers.tick(1500);
+  f.jump(36_000);
+  assert.equal((await fetch(f.base + '/api/report', { method: 'POST', body: '{}' })).status, 400);
+  assert.equal((await fetch(f.base + '/api/report', { method: 'POST', body: JSON.stringify({ machine: 'nobody', cpu: 10, ram: { used: 1, total: 2 }, disks: [] }) })).status, 404);
+  assert.equal((await f.get()).power.pending.action, 'sleep');
+  assert.equal((await f.report()).status, 204);
+  assert.equal((await f.get()).power.pending, null);
+});
+test('the report that shows a resume is recorded after the resume event, not before', async t => {
+  const f = await fixture(t); await f.report();
+  const abort = new AbortController(); t.after(() => abort.abort());
+  const reader = (await fetch(f.base + '/api/events', { signal: abort.signal })).body!.getReader(); await reader.read();
+  let buffer = '';
+  const event = async () => { // the resume and the report may arrive in one chunk
+    while (!buffer.includes('\n\n')) buffer += new TextDecoder().decode((await reader.read()).value);
+    const [first, ...rest] = buffer.split('\n\n'); buffer = rest.join('\n\n');
+    return JSON.parse(first.split('data: ')[1]);
+  };
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  await f.post('pc'); await event();
+  f.jump(36_000);
+  await fetch(f.base + '/api/report', { method: 'POST', body: JSON.stringify({ machine: 'pc', cpu: 80, ram: { used: 1, total: 2 }, disks: [] }) });
+  const resumed = await event();
+  assert.deepEqual([resumed.power.pending, resumed.online, resumed.usage.cpu], [null, false, 10]);
+  const reported = await event();
+  assert.deepEqual([reported.online, reported.usage.cpu], [true, 80]);
+});
 test('power errors, timeouts and resume publish machine events; resume also cancels an unstarted command', async t => {
   const f = await fixture(t); await f.report();
   const abort = new AbortController(); t.after(() => abort.abort());

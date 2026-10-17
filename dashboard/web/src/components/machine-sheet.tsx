@@ -1,3 +1,4 @@
+import type { LevelLimits } from "@/lib/types"
 import { AppsSection } from "@/components/apps-list"
 import { MinutePanel, Scrubber, type Mark } from "@/components/minute"
 import { Card } from "@/components/ui/card"
@@ -178,13 +179,14 @@ export function MachineSheet({
               label="RAM"
               value={percent(usage.ram.used, usage.ram.total)}
               detail={formatUsedOfTotal(usage.ram.used, usage.ram.total)}
-              flag={online ? FLAGS[levelOf(percent(usage.ram.used, usage.ram.total))] : undefined}
+              level={levelOf(percent(usage.ram.used, usage.ram.total), machine.limits?.usage.ram)}
+              flag={online ? FLAGS[levelOf(percent(usage.ram.used, usage.ram.total), machine.limits?.usage.ram)] : undefined}
               points={points}
               now={now}
               lifted={!online}
               scrub={scrub}
             />
-            <DiskChannel disks={usage.disks} points={points} now={now} lifted={!online} scrub={scrub} />
+            <DiskChannel limits={machine.limits?.usage.disk} disks={usage.disks} points={points} now={now} lifted={!online} scrub={scrub} />
             <p id={scrub.hintId} className="sr-only">
               Arrow keys pick a minute; Enter shows its Top Apps.
             </p>
@@ -200,7 +202,7 @@ export function MachineSheet({
             )}
           </div>
 
-          {usage.disks.length > 1 && <DriveList disks={usage.disks} muted={!online} />}
+          {usage.disks.length > 1 && <DriveList limits={machine.limits?.usage.disk} disks={usage.disks} muted={!online} />}
 
           {(usage.services?.t3 !== undefined || machine.vpns.length > 0) && (
             // What runs on the Machine, under one dashed rule.
@@ -227,7 +229,7 @@ function ChannelRow({
   channel,
   label,
   value,
-  level = levelOf(value),
+  level = "ok",
   reading = formatPercent(value),
   detail,
   flag,
@@ -348,12 +350,14 @@ function TempChannel({
 }
 
 function DiskChannel({
+  limits,
   disks,
   points,
   now,
   lifted,
   scrub,
 }: {
+  limits: LevelLimits | undefined
   disks: Disk[]
   points: TracePoint[]
   now: number
@@ -362,7 +366,7 @@ function DiskChannel({
 }) {
   const fullest = fullestDisk(disks)
   const value = fullest ? percent(fullest.used, fullest.total) : 0
-  const level = levelOf(value)
+  const level = levelOf(value, limits)
   const detail = !fullest
     ? "No drives reported"
     : disks.length === 1
@@ -392,12 +396,12 @@ const INDICATOR: Record<Level, string> = {
   full: "[&_[data-slot=meter-indicator]]:bg-full",
 }
 
-function DriveList({ disks, muted }: { disks: Disk[]; muted: boolean }) {
+function DriveList({ disks, muted, limits }: { disks: Disk[]; muted: boolean; limits: LevelLimits | undefined }) {
   return (
     <ul aria-label="Drives" className="grid gap-x-6 gap-y-3 sm:grid-cols-2">
       {disks.map((disk) => {
         const value = percent(disk.used, disk.total)
-        const level = levelOf(value)
+        const level = levelOf(value, limits)
         return (
           <li key={disk.name} className="flex flex-col gap-1.5">
             <div className="flex items-baseline justify-between gap-3 text-[0.875rem]">

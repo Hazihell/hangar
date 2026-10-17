@@ -1,6 +1,6 @@
 # Dashboard API
 
-The contract between the server (`dashboard/server`), the reporters, and the page (`dashboard/web`). Terms follow [GLOSSARY.md](../GLOSSARY.md).
+The contract between the server (`dashboard/server`), the reporters, and the page (`dashboard/web`). Types live in the type-only [contract.ts](contract.ts), imported by both the Node server and the page. `npm run typecheck` in `dashboard/web` checks both against it; the server still runs directly with Node 24 type stripping, without dependencies or a build step. Terms follow [GLOSSARY.md](../GLOSSARY.md).
 
 The server listens on `127.0.0.1:4318` (override with `HANGAR_DASHBOARD_PORT`). `tailscale serve` puts it at `https://stormtrooper-linux.taila332e5.ts.net`. In production the server also serves the built page from `dashboard/web/dist`; in development Vite proxies `/api` to it.
 
@@ -12,7 +12,7 @@ Except for `POST /api/report`, a present `Origin` must be `https://<allowed host
 
 Tailscale Serve's TCP HTTP proxy preserves the original Host (`r.Out.Host = r.In.Host` in [Tailscale v1.104.1](https://github.com/tailscale/tailscale/blob/v1.104.1/ipn/ipnlocal/serve.go#L927)), so the Mac reporter's HTTPS URL forwards `stormtrooper-linux.taila332e5.ts.net`, which startup discovers. Forwarded headers do not grant trust.
 
-Vite already uses `changeOrigin: true`, forwarding Host as `127.0.0.1:<server port>`. Browser Origin still names Vite's port: start the backend with `HANGAR_DASHBOARD_HOSTS=localhost:5173,127.0.0.1:5173` for the default local development URLs (adjust for the actual Vite port). No web configuration change is needed.
+Vite already uses `changeOrigin: true`, forwarding Host as `127.0.0.1:<server port>`. Vite rewrites a present browser Origin to the API origin too, so proxied commands use the same safety checks as the built page.
 
 ## Machines
 
@@ -88,6 +88,16 @@ Responses: `204` accepted; `400` malformed; `404` Machine not in the list.
         "temps": { "cpu": 49.5, "gpu": 38 }
       },
       "tempLimits": { "high": 75, "hot": 85 },
+      "limits": {
+        "vpnMs": 90000, "powerMs": 120000, "updateMs": 900000,
+        "processes": 20, "maxTargets": 200,
+        "usage": {
+          "cpu": { "high": 80, "hot": 90 },
+          "ram": { "high": 85, "hot": 90 },
+          "disk": { "high": 85, "hot": 90 }
+        }
+      },
+      "attention": [],
       "vpns": [
         {
           "name": "Steeprock",
@@ -122,6 +132,9 @@ Responses: `204` accepted; `400` malformed; `404` Machine not in the list.
 - `build`: a short hash of the built page's `index.html` that the server is serving (`""` when no page is built), recomputed when that file changes. A tab that sees it differ from the one it loaded with knows the Dashboard was rebuilt and should reload.
 - `lastSeen` and `usage` are `null` for a Machine that has never reported.
 - `usage.temps`: the latest report's `temps`; absent when it had none.
+- `limits`: server-owned policy, present on every Machine, also on events. `vpnMs`, `powerMs` and `updateMs` are command lifetimes in milliseconds; the page uses them for optimistic VPN state and the Sleep/Shut down/restart overlay. `processes` is the per-App display cap; `maxTargets` is the largest explicit Quit target list the server accepts (App-by-name Quit still resolves all of its Processes). These values come from the same constants the server enforces.
+- `limits.usage`: percent display thresholds for CPU/RAM/disk, each `{ high, hot }`. As for `tempLimits`, `high` is that Alert rule's `clear` and `hot` its `at` (80/90 for CPU, 85/90 for RAM and disk by default). The page classifies the rounded displayed percent. These are display levels, not active Alert decisions. Temperature keeps using `tempLimits`.
+- `attention`: active Alert conditions for this Machine, `{ tag, title, body }[]`, or `[]`. The banner renders these server-owned titles and bodies; text describes when the current occurrence began. It follows the same evaluator as push delivery: sustained periods, exact unrounded comparisons, hysteresis, enabled rules, VPN intent and startup/resume grace. Cooldown mutes push delivery, but active conditions remain in this list. Evaluation and durable attention work even when push keys are unusable or nobody subscribed. A new occurrence or a clear sends a Machine event even if no report arrived. Offline status remains visible on each Machine independently of whether Offline is an enabled Alert.
 - `tempLimits`: `{ "high", "hot" }` in °C, this Machine's temperature Alert thresholds (`high` is `temp.clear`, `hot` is `temp.at`, with its `machines` override applied), for coloring the reading; `null` when the temperature Alert is off.
 - `vpns`: the latest known VPNs, `[]` if none. A report omitting `vpns` keeps the previous list. `pending` is `{ "action": "connect" | "disconnect", "since": "<iso>" }` while a command is under way, else `null`. `error` is `{ "message": "...", "at": "<iso>" }` when the last command failed, else `null`.
 - `apps`: `null` until the Machine has sent Processes. `list` holds the union of the 10 Apps using the most CPU and the 10 using the most RAM, so the page can sort by either. Each App sums its Processes; `processes` lists them (up to 20, most CPU first). `quit` says whether the Dashboard may Quit it (see Quit below): for an App, whether any of its Processes may be. On the PC, one App is named `WSL`: its `ram` is the `vmmemWSL` Process's and its `cpu` the larger of that Process's and the sum of the Processes inside WSL (Windows doesn't let a user read `vmmemWSL`'s CPU time), its `quit` is always `false`, and instead of `processes` it carries `apps`, the Apps inside WSL built the same way. Kept in memory only.
@@ -327,4 +340,4 @@ The browser's `PushSubscription` as JSON (`{ endpoint, keys: { p256dh, auth } }`
 
 Server-sent events. Each event is named `machine`, and its data is one Machine in the same shape as above, except that `history` is replaced by `minute`: the current minute's running average, `{ t, cpu, ram, disk, temp }`. The page replaces its last History point when `t` matches, otherwise appends it and drops points older than 24 h. `minute` is `null` when the current minute has no reports yet (as when a Machine turns Offline); the page then leaves History alone.
 
-The server sends an event on every report, when a Machine turns Offline, and when a VPN command starts, succeeds or fails. Events carry `apps`, `usage.temps` and `tempLimits` like `GET /api/machines` does.
+The server sends an event on every report, when a Machine turns Offline, and when a VPN command starts, succeeds or fails. Events carry `apps`, `usage.temps`, `tempLimits`, `limits` and `attention` like `GET /api/machines` does. A tick that activates or clears attention sends an event too, so a sustained CPU Alert reaches the banner without waiting for another report. New fields are optional in the shared types for older servers; a page without policy does not invent local numeric limits, and without attention it reports status without claiming that nothing needs attention.

@@ -3,8 +3,13 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createDashboard } from './server.ts';
 import { Store } from './store.ts';
-import { validReport, validQuit } from './rules.ts';
+import { Usage, acceptReport } from './usage.ts';
+import { validQuit } from './rules.ts';
 const machine = { id: 'pc', name: 'PC', os: 'windows', collector: 'wsl' };
+function open() {
+  const store = new Store(':memory:');
+  return { store, usage: new Usage(store.db, [machine]) };
+}
 const report = { machine: 'pc', cpu: 10, ram: { used: 1, total: 2 }, disks: [] };
 const p = { pid: 10, name: 'chrome.exe', app: 'Chrome', cpu: 50, ram: 100, started: '123', own: true };
 async function setup(t: any, extra: any = {}) {
@@ -43,8 +48,8 @@ test('bad Process rows are dropped without losing valid Usage or healthy rows', 
   const state = (await (await fetch(base + '/api/machines')).json()).machines[0];
   assert.equal(state.online, true); assert.equal(state.usage.cpu, 10);
   assert.equal(state.apps.list[0].count, 1); assert.equal(state.apps.list[0].cpu, 50);
-  assert.equal(validReport({ ...report, cpu: -1, processes: [p] }), false);
-  assert.equal(validReport({ ...report, processes: {} }), false);
+  assert.equal(acceptReport({ ...report, cpu: -1, processes: [p] }), null);
+  assert.equal(acceptReport({ ...report, processes: {} }), null);
 });
 test('app-wide Quit resolves every quittable Process beyond the display cap with latest tokens', async t => {
   const calls: any[] = [];
@@ -63,35 +68,42 @@ test('app-wide Quit resolves every quittable Process beyond the display cap with
   for (const value of [{ app: '', force: true }, { app: 'Chrome', where: 'mac', force: true }, { app: 'Chrome', targets: [{ pid: 1, started: 'a' }], force: true }]) assert.equal(validQuit(value), false);
 });
 test('minute App averages ignore reports without Processes but count explicit empty samples', () => {
-  const store = new Store(':memory:', [machine]);
+  const { store, usage } = open();
   try {
-    store.intake({ ...report, processes: [p] }, 1);
-    store.intake(report, 2);
-    assert.equal(store.topApps('pc', new Date(0).toISOString(), 2)!.apps[0].cpu, 50);
-    store.intake({ ...report, processes: [] }, 3);
-    assert.equal(store.topApps('pc', new Date(0).toISOString(), 3)!.apps[0].cpu, 25);
-    assert.equal(store.snapshot(machine, 3).history[0].cpu, 10);
+    usage.intake({ ...report, processes: [p] }, 1);
+    usage.intake(report, 2);
+    assert.equal(usage.topApps('pc', new Date(0).toISOString(), 2)!.apps[0].cpu, 50);
+    usage.intake({ ...report, processes: [] }, 3);
+    assert.equal(usage.topApps('pc', new Date(0).toISOString(), 3)!.apps[0].cpu, 25);
+    assert.equal(usage.snapshot(machine, 3).history[0].cpu, 10);
   } finally { store.close(); }
 });
-test('minute storage bounds retained Apps to thirty by combined CPU and RAM rank', () => {
-  const store = new Store(':memory:', [machine]);
+test('minute storage keeps thirty Apps by combined CPU and RAM rank across a restart', async t => {
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const dir = mkdtempSync(join(tmpdir(), 'hangar-minute-')); t.after(() => rmSync(dir, { recursive: true }));
+  const file = join(dir, 'history.db');
+  let store = new Store(file), usage = new Usage(store.db, [machine]);
+  usage.intake({ ...report, processes: Array.from({ length: 80 }, (_, i) => ({ ...p, pid: i + 1, app: String(i), cpu: i, ram: 80 - i })) }, 1); store.close();
+  // Only the stored thirty survive the restart: '79' ranks by CPU and '40' by neither.
+  store = new Store(file); usage = new Usage(store.db, [machine]);
   try {
-    store.intake({ ...report, processes: Array.from({ length: 80 }, (_, i) => ({ ...p, pid: i + 1, app: String(i), cpu: i, ram: 80 - i })) }, 1);
-    const row = store.db.prepare('SELECT sums FROM top_apps').get() as any;
-    assert.equal(JSON.parse(row.sums).length, 30);
-    const names = store.topApps('pc', new Date(0).toISOString(), 1)!.apps.map((a: any) => a.name);
-    assert.ok(names.includes('0')); assert.ok(names.includes('79')); assert.equal(names.includes('40'), false);
+    usage.intake({ ...report, processes: [{ ...p, app: '40', cpu: 100, ram: 100 }] }, 2);
+    const apps = usage.topApps('pc', new Date(0).toISOString(), 2)!.apps;
+    assert.equal(apps.find((a: any) => a.name === '40')!.cpu, 50);
+    assert.equal(apps.find((a: any) => a.name === '79')!.cpu, 39.5);
   } finally { store.close(); }
 });
 
 test('minute leaders retain earlier contributions even when outside the persisted thirty after a sample', () => {
-  const store = new Store(':memory:', [machine]);
+  const { store, usage } = open();
   try {
     const leaders = Array.from({ length: 30 }, (_, i) => ({ ...p, pid: 100 + i, app: String(i), cpu: i < 15 ? 21 : 0, ram: i < 15 ? 0 : 21 }));
     const steady = { ...p, app: 'steady', cpu: 20, ram: 20 };
-    store.intake({ ...report, processes: [...leaders, steady] }, 1);
-    store.intake({ ...report, processes: [steady] }, 2);
-    assert.deepEqual(store.topApps('pc', new Date(0).toISOString(), 2)!.apps.find((a: any) => a.name === 'steady'), { name: 'steady', cpu: 20, ram: 20 });
+    usage.intake({ ...report, processes: [...leaders, steady] }, 1);
+    usage.intake({ ...report, processes: [steady] }, 2);
+    assert.deepEqual(usage.topApps('pc', new Date(0).toISOString(), 2)!.apps.find((a: any) => a.name === 'steady'), { name: 'steady', cpu: 20, ram: 20 });
   } finally { store.close(); }
 });
 test('WSL App Quit resolves beyond twenty and protects a restarted T3 MainPID at action time', async t => {

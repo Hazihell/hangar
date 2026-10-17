@@ -23,7 +23,7 @@ test('HTTP accepts reports, rejects unknown Machines, and streams Usage', async 
   assert.equal((await post({ ...report, at: "untrusted client clock" })).status, 204);
   const body = await (await fetch(base + '/api/machines')).json();
   assert.equal(body.now, '1970-01-01T00:02:00.001Z');
-  assert.deepEqual(body.machines[0], { id: 'pc', name: 'PC', os: 'windows', apps: null, online: true, lastSeen: body.now, usage: { at: body.now, cpu: 10, ram: report.ram, disks: report.disks, services: report.services }, vpns: [], power: { actions: ['sleep', 'shutdown'], pending: null, error: null }, updates: { checkedAt: null, checking: false, items: [], pending: null, error: null }, tempLimits: { high: 75, hot: 85 }, history: [{ t: '1970-01-01T00:02:00.000Z', cpu: 10, ram: 75, disk: 50, temp: null }] });
+  assert.deepEqual(body.machines[0], { id: 'pc', name: 'PC', os: 'windows', apps: null, online: true, lastSeen: body.now, usage: { at: body.now, cpu: 10, ram: report.ram, disks: report.disks, services: report.services }, vpns: [], power: { actions: ['sleep', 'shutdown'], pending: null, error: null }, updates: { checkedAt: null, checking: false, items: [], pending: null, error: null }, tempLimits: { high: 75, hot: 85 }, attention: [], limits: { vpnMs: 90_000, powerMs: 120_000, updateMs: 900_000, processes: 20, maxTargets: 200, usage: { cpu: { high: 80, hot: 90 }, ram: { high: 85, hot: 90 }, disk: { high: 85, hot: 90 } } }, history: [{ t: '1970-01-01T00:02:00.000Z', cpu: 10, ram: 75, disk: 50, temp: null }] });
   const event = new TextDecoder().decode((await reader.read()).value);
   assert.match(event, /^event: machine\ndata: /);
   const payload = JSON.parse(event.split('data: ')[1].trim());
@@ -108,4 +108,40 @@ test('static files have content types, SPA fallback, and cannot escape dist', as
   assert.match(await (await fetch(base + '/')).text(), /isn't built yet/);
   assert.equal((await fetch(base + '/missing.js')).status, 404);
   assert.equal(await (await fetch(base + '/assets/app.js')).text(), 'asset');
+});
+
+// The banner reads these same active conditions over both HTTP and SSE.
+test('snapshots and events carry policy and Alert attention, including hysteresis and tick-only changes', async t => {
+  let now = 1_000_000;
+  const rules = structuredClone(DEFAULT_RULES);
+  rules.cpu.for = 5;
+  rules.disk = { at: 95, clear: 85 };
+  const app = createDashboard({ db: ':memory:', machines: [{ id: 'pc', name: 'PC', os: 'windows', collector: 'wsl' }], collect: false, clock: () => now, rules });
+  await new Promise<void>(resolve => app.server.listen(0, '127.0.0.1', resolve));
+  t.after(() => app.close());
+  const base = `http://127.0.0.1:${(app.server.address() as any).port}`;
+  const abort = new AbortController(); t.after(() => abort.abort());
+  const reader = (await fetch(base + '/api/events', { signal: abort.signal })).body!.getReader();
+  await reader.read();
+  const snapshot = async () => (await (await fetch(base + '/api/machines')).json()).machines[0];
+  const post = (cpu: number, disk: number) => fetch(base + '/api/report', { method: 'POST', body: JSON.stringify({ machine: 'pc', cpu, ram: { used: 1, total: 10 }, disks: [{ name: 'C:', used: disk, total: 100 }] }) });
+  await post(96, 94);
+  let value = await snapshot();
+  assert.deepEqual(value.attention, [], 'CPU duration not reached, disk below configured threshold');
+  assert.deepEqual(value.limits, { vpnMs: 90_000, powerMs: 120_000, updateMs: 900_000, processes: 20, maxTargets: 200, usage: { cpu: { high: 80, hot: 90 }, ram: { high: 85, hot: 90 }, disk: { high: 85, hot: 95 } } });
+  await reader.read();
+  now += 5000;
+  app.tick();
+  const events = new TextDecoder().decode((await reader.read()).value);
+  const event = JSON.parse(events.split('data: ')[1].split('\n')[0]);
+  assert.deepEqual(event.attention.map((a: any) => a.tag), ['pc:cpu'], 'the tick sends an event when duration elapses without a new report');
+  assert.deepEqual(event.limits, value.limits);
+  assert.equal(event.history, undefined);
+  assert.deepEqual((await snapshot()).attention, event.attention);
+  await post(85, 96);
+  value = await snapshot();
+  assert.deepEqual(value.attention.map((a: any) => a.tag), ['pc:cpu', 'pc:disk:C:']);
+  await post(79, 84);
+  assert.deepEqual((await snapshot()).attention, []);
+  await reader.cancel();
 });
