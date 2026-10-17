@@ -1,4 +1,5 @@
 import { createPower } from './power.ts';
+import { createUpdates, detachedExec } from './updates.ts';
 import { mayQuit } from './apps.ts';
 import { quitProcesses } from './quit.ts';
 import type { Local } from './quit.ts';
@@ -9,6 +10,7 @@ import type { Action, Exec } from './vpn.ts';
 import { createServer } from 'node:http';
 import type { ServerResponse } from 'node:http';
 import { readFileSync, realpathSync, statSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { resolve, extname, sep, dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -33,7 +35,7 @@ function dashboardHosts() {
   }
   return [tailnetName, ...(process.env.HANGAR_DASHBOARD_HOSTS ?? '').split(/[\s,]+/)].filter(Boolean).map(h => h.toLowerCase());
 }
-export function createDashboard(options: { db: string; machines?: Machine[]; clock?: () => number; collect?: boolean; dist?: string; exec?: Exec; local?: Local; rules?: Rules; vapid?: string; fetch?: FetchLike; hosts?: string[]; mainPid?: () => Promise<number | null> }) {
+export function createDashboard(options: { db: string; t3Db?: string; hangar?: string; updateChecks?: boolean; kill?: (pid: number, signal: 'SIGTERM' | 'SIGKILL') => void; machines?: Machine[]; clock?: () => number; collect?: boolean; dist?: string; exec?: Exec; local?: Local; rules?: Rules; vapid?: string; fetch?: FetchLike; hosts?: string[]; mainPid?: () => Promise<number | null> }) {
   const machines = options.machines ?? JSON.parse(readFileSync(resolve(root, 'machines.json'), 'utf8'));
   const store = new Store(options.db, machines), clock = options.clock ?? Date.now;
   const configuredHosts = () => options.hosts ?? dashboardHosts();
@@ -78,9 +80,12 @@ export function createDashboard(options: { db: string; machines?: Machine[]; clo
       return command ? { ...vpn, pending: command.pending, error: command.error } : vpn;
     });
     if (machine.collector === 'wsl') Object.assign(value, { power: power.state(machine.id) });
+    Object.assign(value, { updates: updates.state(machine) });
     return value;
   }
   const power = createPower(exec, clock, (machine, now) => emit(machine, now), () => observeSuspension(clock()), now => { alerts?.recover(now); power.resume(now); });
+  const updates = createUpdates({ machines, exec: options.exec ?? detachedExec, clock, hangar: options.hangar ?? resolve(root, '../bin/hangar'), t3Db: options.t3Db ?? join(process.env.T3CODE_HOME ?? join(homedir(), '.t3'), 'userdata/statev2.sqlite'),
+    schedule: options.updateChecks ?? options.collect !== false, kill: options.kill, online: machine => store.snapshot(machine, clock(), false).online, emit: (machine, now) => emit(machine, now) });
   // Alerts. The VAPID key lives beside the database; if it is broken they stay off (the endpoints answer 503)
   // rather than replacing it, which would invalidate every subscription.
   const rules = options.rules ?? loadRules(resolve(root, 'alerts.json'));
@@ -136,6 +141,16 @@ export function createDashboard(options: { db: string; machines?: Machine[]; clo
     } catch (error) { console.error('Alerts:', error); }
   }
   const dist = options.dist ?? resolve(root, 'web/dist');
+  // Names the page being served, so a tab still running an older one can tell it was rebuilt. Rehashed when index.html changes.
+  let built = { mtime: -1, id: '' };
+  function buildId() {
+    try {
+      const file = resolve(dist, 'index.html'), mtime = statSync(file).mtimeMs;
+      if (mtime !== built.mtime) built = { mtime, id: createHash('sha256').update(readFileSync(file)).digest('hex').slice(0, 12) };
+    } catch { built = { mtime: -1, id: '' }; }
+    return built.id;
+  }
+  buildId();
   for (const m of machines) statuses.set(m.id, store.snapshot(m, clock()).online);
   function emit(machine: Machine, now: number) {
     const event = state(machine, now, true);
@@ -231,6 +246,26 @@ export function createDashboard(options: { db: string; machines?: Machine[]; clo
         power.start(machine, value.action, now);
         res.writeHead(202, { 'Content-Type': 'application/json' }).end(JSON.stringify(power.state(id))); return;
       }
+      const updatesPath = path.match(/^\/api\/machines\/([^/]+)\/updates(\/check)?$/);
+      if (req.method === 'POST' && updatesPath) {
+        let id; try { id = decodeURIComponent(updatesPath[1]); } catch { res.writeHead(400).end(); return; }
+        if (!/^application\/(?:[\w.+-]+\+)?json(?:\s*;|$)/i.test(req.headers['content-type'] ?? '')) { res.writeHead(400).end(); return; }
+        let body = '', size = 0;
+        for await (const chunk of req) { size += chunk.length; if (size > 4096) { res.writeHead(400).end(); return; } body += chunk; }
+        let value: any = null;
+        if (!updatesPath[2]) { try { value = JSON.parse(body); } catch { res.writeHead(400).end(); return; } if (!value || typeof value !== 'object' || !Array.isArray(value.items)) { res.writeHead(400).end(); return; } }
+        const machine = machines.find((m: Machine) => m.id === id);
+        if (!machine) { res.writeHead(404).end(); return; }
+        observeSuspension(clock());
+        const status = updatesPath[2] ? updates.check(machine) : updates.update(machine, value.items);
+        res.writeHead(status, status === 202 && !updatesPath[2] ? { 'Content-Type': 'application/json' } : {}).end(status === 202 && !updatesPath[2] ? JSON.stringify(updates.state(machine)) : ''); return;
+      }
+      const threadsPath = path.match(/^\/api\/machines\/([^/]+)\/t3-threads$/);
+      if (req.method === 'GET' && threadsPath) {
+        let id; try { id = decodeURIComponent(threadsPath[1]); } catch { res.writeHead(400).end(); return; }
+        const machine = machines.find((m: Machine) => m.id === id), value = machine ? updates.threads(machine) : null;
+        res.writeHead(value ? 200 : 404, value ? { 'Content-Type': 'application/json' } : {}).end(value ? JSON.stringify(value) : ''); return;
+      }
       const vpnPath = path.match(/^\/api\/machines\/([^/]+)\/vpns\/([^/]+)$/);
       if (req.method === 'POST' && vpnPath) {
         let id, name;
@@ -290,7 +325,7 @@ export function createDashboard(options: { db: string; machines?: Machine[]; clo
       const read = req.method === 'GET' || req.method === 'HEAD'; // node sends no body for HEAD
       if (read && path === '/api/machines') {
         const now = clock(); store.prune(now);
-        res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ now: new Date(now).toISOString(), machines: machines.map((m: Machine) => state(m, now)) })); return;
+        res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ now: new Date(now).toISOString(), build: buildId(), machines: machines.map((m: Machine) => state(m, now)) })); return;
       }
       if (req.method === 'GET' && path === '/api/events') {
         res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
@@ -320,7 +355,7 @@ export function createDashboard(options: { db: string; machines?: Machine[]; clo
     lastObservedAt = now;
   }
   function tick() {
-    const now = clock(); observeSuspension(now); power.tick(now); store.prune(now);
+    const now = clock(); observeSuspension(now); power.tick(now); updates.tick(now); store.prune(now);
     for (const m of machines) {
       let changed = false;
       for (const command of commands.get(m.id)?.values() ?? []) {
@@ -334,7 +369,7 @@ export function createDashboard(options: { db: string; machines?: Machine[]; clo
   const offline = setInterval(tick, 5000);
   const heartbeat = setInterval(() => { for (const stream of streams) stream.write(': heartbeat\n\n'); }, 20_000);
   const stops = options.collect === false ? [] : machines.filter((m: Machine) => m.collector === 'wsl').slice(0, 1).map((m: Machine) => startCollector(m.id, intake));
-  return { server, tick, async idle() { while (inflight.size) await Promise.allSettled([...inflight]); }, async close() { closed = true; power.close(); clearInterval(protectionTimer); for (const timer of timers.values()) clearTimeout(timer); timers.clear(); commands.clear(); clearInterval(offline); clearInterval(heartbeat); stops.forEach((stop: () => void) => stop()); for (const stream of streams) stream.end(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); store.close(); } };
+  return { server, tick, async idle() { while (inflight.size) await Promise.allSettled([...inflight]); }, async close() { closed = true; power.close(); updates.close(); clearInterval(protectionTimer); for (const timer of timers.values()) clearTimeout(timer); timers.clear(); commands.clear(); clearInterval(offline); clearInterval(heartbeat); stops.forEach((stop: () => void) => stop()); for (const stream of streams) stream.end(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); store.close(); } };
 }
 function statExists(path: string) { try { statSync(path); return true; } catch { return false; } }
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

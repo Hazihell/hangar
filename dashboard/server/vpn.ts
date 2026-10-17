@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import type { Machine } from './store.ts';
 import type { Vpn } from './rules.ts';
 export type Action = 'connect' | 'disconnect';
-export type Exec = (file: string, args: string[], options: { timeout: number; encoding?: 'utf8' }, callback: (error: any, stdout: string, stderr: string) => void) => unknown;
+export type Exec = (file: string, args: string[], options: { timeout: number; encoding?: 'utf8'; maxBuffer?: number; detached?: boolean }, callback: (error: any, stdout: string, stderr: string) => void) => unknown;
 const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
 export function vpnCommand(machine: Machine, vpn: Vpn, action: Action) {
   if (machine.collector === 'wsl') {

@@ -6,6 +6,7 @@ import { Separator } from "@/components/ui/separator"
 import { PowerLine, PowerMenu, usePower } from "@/components/power-control"
 import { PenMark } from "@/components/status"
 import { Trace } from "@/components/trace"
+import { UpdatesSection } from "@/components/updates-section"
 import { VpnList } from "@/components/vpn-list"
 import {
   formatAbsolute,
@@ -51,6 +52,7 @@ export function MachineSheet({
   heardAt = null,
   highlighted = false,
   onPowerSent,
+  onUpdateSent,
   away = null,
 }: {
   machine: Machine
@@ -61,6 +63,8 @@ export function MachineSheet({
   highlighted?: boolean
   /** The server took a Sleep or Shut down for this Machine. */
   onPowerSent?: (action: PowerAction) => void
+  /** The server took an update for this Machine. */
+  onUpdateSent?: (items: string[]) => void
   /** It went to sleep or shut down, and took the Dashboard with it: said instead of Online. */
   away?: PowerAction | null
 }) {
@@ -194,6 +198,8 @@ export function MachineSheet({
               <VpnList machine={machine} muted={!online} locked={locked} />
             </div>
           )}
+
+          <UpdatesSection machine={machine} now={now} muted={!online} locked={locked} onSent={onUpdateSent} />
 
           <AppsSection machine={machine} muted={!online} locked={locked} />
         </div>

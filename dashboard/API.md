@@ -115,10 +115,12 @@ Responses: `204` accepted; `400` malformed; `404` Machine not in the list.
 }
 ```
 
+- `build`: a short hash of the built page's `index.html` that the server is serving (`""` when no page is built), recomputed when that file changes. A tab that sees it differ from the one it loaded with knows the Dashboard was rebuilt and should reload.
 - `lastSeen` and `usage` are `null` for a Machine that has never reported.
 - `vpns`: the latest known VPNs, `[]` if none. A report omitting `vpns` keeps the previous list. `pending` is `{ "action": "connect" | "disconnect", "since": "<iso>" }` while a command is under way, else `null`. `error` is `{ "message": "...", "at": "<iso>" }` when the last command failed, else `null`.
 - `apps`: `null` until the Machine has sent Processes. `list` holds the union of the 10 Apps using the most CPU and the 10 using the most RAM, so the page can sort by either. Each App sums its Processes; `processes` lists them (up to 20, most CPU first). `quit` says whether the Dashboard may Quit it (see Quit below): for an App, whether any of its Processes may be. On the PC, one App is named `WSL`: its `ram` is the `vmmemWSL` Process's and its `cpu` the larger of that Process's and the sum of the Processes inside WSL (Windows doesn't let a user read `vmmemWSL`'s CPU time), its `quit` is always `false`, and instead of `processes` it carries `apps`, the Apps inside WSL built the same way. Kept in memory only.
 - `power`: present only on a Machine the Dashboard can put to Sleep or Shut down (today the PC, `collector: "wsl"`). `{ "actions": ["sleep", "shutdown"], "pending": { "action": "sleep" | "shutdown", "since": "<iso>" } | null, "error": { "message": "...", "at": "<iso>" } | null }`. See `POST /api/machines/:id/power`.
+- `updates`: present on every Machine. `{ "checkedAt": "<iso>" | null, "checking": bool, "items": [Update], "pending": { "items": ["<id>"], "since": "<iso>" } | null, "error": { "message": "...", "at": "<iso>" } | null }`. See Updates below.
 - `history`: oldest first, at most 1440 points. `t` is the start of the minute. `cpu`, `ram` and `disk` are percents; `disk` is the fullest disk's percent.
 
 ## `POST /api/machines/:id/vpns/:name`
@@ -160,6 +162,60 @@ The server sets `pending`, sends a `machine` event, and runs the command about 1
 `pending` clears when the server sees it was suspended (its wall clock jumped while it wasn't running, or the `sleep` command returned success, which happens only once the PC is awake again), or on the server's next start. Either counts as resuming for Alerts. The command failing, or 2 minutes passing with the server still running, clears `pending` and sets `error` (for example, an app blocked Shut down). An `error` stays until the next power command. Pending commands and errors live in memory only.
 
 Sleeping, shutting down and coming back are not Alerts: after the server starts or resumes from suspension, every rule's timer starts over, and for 3 minutes no Offline, VPN or T3 service Alert fires on any Machine. Offline and T3 service problems still there after that fire as usual.
+
+## Updates
+
+The Dashboard checks each Machine for newer versions of the tools Hangar keeps up to date, shows what's out of date, and runs the update when asked. Skill updates are left to `hangar update` in a terminal, since they need a diff reviewed first.
+
+The work is done by `bin/hangar` on the Machine itself, so a terminal and the Dashboard update the same way:
+
+- `hangar outdated --json` prints `{ "items": [Update] }` and changes nothing (beyond refreshing package indexes).
+- `hangar update <id>...` updates just those items. `hangar update` with no ids keeps doing everything, skills included.
+
+The PC runs these locally, by the path of the repo's `bin/hangar`. The Mac runs `~/.local/bin/hangar` over SSH (`ssh -o BatchMode=yes`, like the VPN commands); `hangar` puts `~/.local/bin` and Homebrew on its own `PATH`, so a non-interactive SSH session is enough. A Mac whose `hangar` predates `outdated` can't answer, and its checks fail until `hangar sync` brings it up to date.
+
+An `Update`:
+
+```json
+{ "id": "claude", "name": "Claude Code", "current": "2.1.302", "latest": "2.1.310", "available": true, "blocked": null }
+```
+
+| `id` | `name` | Machines | Current / latest | Update |
+| --- | --- | --- | --- | --- |
+| `t3` | T3 Code | where `t3` is installed (the PC) | installed version / newest on its channel | `t3 update --yes`. Restarts the T3 server, which interrupts running agent threads |
+| `claude` | Claude Code | both | `claude --version` / newest published | `claude update` |
+| `codex` | Codex | both | `codex --version` / newest published | `codex update` |
+| `gh` | GitHub CLI | both | `gh --version` / the PC: apt's candidate; the Mac: Homebrew's | the PC: `sudo -n apt-get install --only-upgrade gh`; the Mac: `brew upgrade gh` |
+| `tea` | Gitea CLI | both | `tea --version` / newest release | the PC: Hangar's checksum-checked install into `~/.local/bin`; the Mac: `brew upgrade tea` |
+| `hangar` | Hangar | both | short commit of `HEAD` / of `origin/main` after `git fetch` | `git pull --ff-only` on `main`, then the PC rebuilds and restarts the Dashboard (last, since that restarts this server) and the Mac restarts its reporter |
+
+- `current` or `latest` is `null` when it couldn't be read; `available` is then `false`.
+- `blocked` is a short reason the Dashboard can't update this item, or `null`. For example, the checkout has local changes or isn't on `main` (`hangar`), or `sudo` needs a password (`gh` on the PC: "Run `hangar update` on the PC"). A blocked item still shows `available`.
+- For `hangar`, `latest` also carries how far behind it is: `"behind": 3` beside the commit (`null` when `origin/main` couldn't be fetched). Only `hangar` has `behind`.
+- `latest` is what each tool's own updater would install: Claude Code follows the release channel in `~/.claude/settings.json` (`autoUpdatesChannel`, default `latest`); Codex, the newest `rust-v` release; T3 Code, the newest release on the channel the installed `t3` was published on (nightly here).
+- `blocked` is only filled in for an item that is `available`.
+
+Checks run a minute after the server starts, then every 6 hours, and on `POST /api/machines/:id/updates/check`. An Offline Machine is skipped (and checked as soon as it is Online again, if its turn has passed) and keeps its last result. `checking` is true while one runs. A check that fails or answers with something other than the document above keeps the previous result and `checkedAt`, and is tried again after 10 minutes; it sets no `error`. The server drops any item that doesn't fit the shape above. Results live in memory.
+
+### `POST /api/machines/:id/updates`
+
+```json
+{ "items": ["claude", "codex"] }
+```
+
+Runs `hangar update` with those ids on the Machine, in that order, except that `hangar` always goes last. Requires a JSON `Content-Type`. Responses: `202` with the new `updates`; `400` empty, unknown or duplicate ids, or an id the Machine doesn't list; `404` no such Machine; `409` the Machine is Offline, an update is already pending or still running on it, or an item is `blocked`.
+
+`pending` is set while it runs; when it ends, the server checks that Machine again. A non-zero exit, or 15 minutes passing, clears `pending` and sets `error` (the command's last line of error output, shortened to 160 characters with control characters removed; "Timed out after 15 minutes" for the limit). `hangar update` carries on past a failed item and exits 1 at the end, so one item failing doesn't stop the others. After the limit the server stops the updater and everything it started (SIGTERM to its process group, SIGKILL 10 s later), and until that process has actually exited a new update answers `409` even though `pending` is already `null`. On a Mac only the local `ssh` is stopped; `hangar update` refuses to run twice at once on the same Machine (a lock in `~/.local/state/hangar`), so a second request fails with "Another hangar update is already running" until the first ends. An `error` stays until the next update. Each change sends a `machine` event.
+
+Updating `hangar` on the PC restarts the server, so `pending` is lost with it; the page reconnects and the fresh check shows the new commit.
+
+### `POST /api/machines/:id/updates/check`
+
+Starts a check now. Requires a JSON `Content-Type` (the body is ignored). `202`, or `409` if one is already running or the Machine is Offline; `404` no such Machine.
+
+### `GET /api/machines/:id/t3-threads`
+
+The T3 threads with a run that hasn't finished (running, queued, or waiting for an answer), so the page can say what a T3 update would interrupt: `{ "threads": [{ "title": "...", "status": "running" }] }`. Read-only from T3's own database (`~/.t3/userdata/statev2.sqlite`). `404` for a Machine that isn't the PC or whose last check didn't list `t3`; `{ "threads": null }` if the database can't be read (for example, T3 changed it), and the page then warns in general terms.
 
 ## `GET /api/machines/:id/minutes/:t`
 

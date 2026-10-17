@@ -22,7 +22,7 @@ test('HTTP accepts reports, rejects unknown Machines, and streams Usage', async 
   assert.equal((await post({ ...report, at: "untrusted client clock" })).status, 204);
   const body = await (await fetch(base + '/api/machines')).json();
   assert.equal(body.now, '1970-01-01T00:02:00.001Z');
-  assert.deepEqual(body.machines[0], { id: 'pc', name: 'PC', os: 'windows', apps: null, online: true, lastSeen: body.now, usage: { at: body.now, cpu: 10, ram: report.ram, disks: report.disks, services: report.services }, vpns: [], power: { actions: ['sleep', 'shutdown'], pending: null, error: null }, history: [{ t: '1970-01-01T00:02:00.000Z', cpu: 10, ram: 75, disk: 50 }] });
+  assert.deepEqual(body.machines[0], { id: 'pc', name: 'PC', os: 'windows', apps: null, online: true, lastSeen: body.now, usage: { at: body.now, cpu: 10, ram: report.ram, disks: report.disks, services: report.services }, vpns: [], power: { actions: ['sleep', 'shutdown'], pending: null, error: null }, updates: { checkedAt: null, checking: false, items: [], pending: null, error: null }, history: [{ t: '1970-01-01T00:02:00.000Z', cpu: 10, ram: 75, disk: 50 }] });
   const event = new TextDecoder().decode((await reader.read()).value);
   assert.match(event, /^event: machine\ndata: /);
   const payload = JSON.parse(event.split('data: ')[1].trim());

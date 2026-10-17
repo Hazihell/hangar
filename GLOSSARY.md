@@ -31,7 +31,7 @@ A VPN connection a Machine's operating system manages, such as Steeprock: Connec
 _Avoid_: tunnel, network
 
 **Dashboard**:
-The page that shows every Machine: Online or Offline, its current Usage, its History, its VPNs (which it can connect and disconnect) and its Apps (which it can Quit).
+The page that shows every Machine: Online or Offline, its current Usage, its History, its VPNs (which it can connect and disconnect), its Apps (which it can Quit) and its Updates (which it can run).
 _Avoid_: monitor, status page
 
 **Process**:
@@ -57,6 +57,10 @@ _Avoid_: suspend, standby
 **Shut down**:
 Asking a Machine to close its Apps and turn off. An App with unsaved work may stop it.
 _Avoid_: power off, force shutdown
+
+**Update**:
+A newer version of a tool Hangar keeps current on a Machine: T3 Code, Claude Code, Codex, gh, tea, or Hangar itself. The Dashboard shows which are out of date and runs the Update when asked; `hangar update` does the same from a terminal, and also updates skills, which need a diff reviewed first and so stay out of the Dashboard. Updating T3 Code restarts its server and interrupts running agent threads; updating Hangar on the PC restarts the Dashboard.
+_Avoid_: upgrade, patch, outdated item
 
 **Alert**:
 A browser push notification about a problem on a Machine: a disk nearly full, CPU or RAM high for minutes on end, a VPN dropped, the T3 service stopped, or the PC Offline. When the problem clears, the Alert is quietly replaced by one saying so. Each browser or phone opts in.
