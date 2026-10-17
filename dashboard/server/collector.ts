@@ -23,6 +23,17 @@ export const vpnScript = `
   })
   if (-not $vpnFailed) { $report.vpns = $vpns }
 `;
+// HWiNFO64 publishes the readings ticked for Gadget reporting as numbered values (Label0, ValueRaw0...) with holes; the CPU is found by its label.
+export const tempScript = `
+  try {
+    $vsb = Get-ItemProperty -Path 'HKCU:\\Software\\HWiNFO64\\VSB' -ErrorAction Stop
+    $label = @($vsb.PSObject.Properties | Where-Object { $_.Name -match '^Label\\d+$' -and $_.Value -eq 'CPU (Tctl/Tdie)' })[0]
+    if ($label) {
+      $celsius = [double]::Parse([string]$vsb.('ValueRaw' + $label.Name.Substring(5)), [Globalization.CultureInfo]::InvariantCulture)
+      if (-not [double]::IsNaN($celsius) -and -not [double]::IsInfinity($celsius)) { $report.temps = @{cpu=$celsius} }
+    }
+  } catch { }
+`;
 export const processScript = `
   try {
     $sampleAt = [Diagnostics.Stopwatch]::GetTimestamp()
@@ -76,17 +87,27 @@ while ($true) {
   })
   $report = @{cpu=[Math]::Min([double]100,[Math]::Max([double]0,[double]$cpu.NextValue())); ram=@{used=[Math]::Max([double]0,($total - [double]$available.NextValue()));total=$total};disks=$disks}
   ${vpnScript}
+  ${tempScript}
   ${processScript}
   $report | ConvertTo-Json -Depth 4 -Compress
   } catch { [Console]::Error.WriteLine($_.Exception.Message) }
 }`;
-export function reportFromLine(line: string, machine: string, t3: boolean) {
+const nvidiaSmi = '/usr/lib/wsl/lib/nvidia-smi';
+/** The first GPU's degrees Celsius from `nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader,nounits`. */
+export function gpuTemperature(output: string) {
+  const first = output.split('\n')[0].trim();
+  return /^-?\d+(\.\d+)?$/.test(first) ? Number(first) : undefined;
+}
+export function reportFromLine(line: string, machine: string, t3: boolean, gpu?: number) {
   const value = JSON.parse(line.replace(/^\uFEFF/, ''));
-  const report = { ...value, machine, services: { t3 },
+  const temps = { ...value.temps, ...(gpu === undefined ? {} : { gpu }) };
+  const report = { ...value, machine, services: { t3 }, ...(Object.keys(temps).length ? { temps } : {}),
     disks: Array.isArray(value.disks) ? value.disks.filter((d: any) => d.total !== 0) : value.disks };
   if (!validReport(report)) throw new Error('invalid Usage');
   return report;
 }
+/** A command's output, or null if it is missing, fails or takes over 3 s. */
+const probe = (file: string, args: string[]) => new Promise<string | null>(resolve => execFile(file, args, { timeout: 3000, encoding: 'utf8' }, (error, stdout) => resolve(error ? null : stdout)));
 export function startCollector(machine: string, intake: (report: unknown) => number) {
   let stopped = false, child: ReturnType<typeof spawn> | undefined, timer: ReturnType<typeof setTimeout> | undefined, delay = 1000;
   try { if (!/microsoft/i.test(readFileSync('/proc/version', 'utf8'))) return () => {}; } catch { return () => {}; }
@@ -105,10 +126,10 @@ export function startCollector(machine: string, intake: (report: unknown) => num
         const value = JSON.parse(line.replace(/^\uFEFF/, ''));
         if (Number.isSafeInteger(value.collectorPid) && value.collectorPid > 0) { collectorPids.add(value.collectorPid); if (Number.isSafeInteger(value.logicalCpus) && value.logicalCpus > 0) logicalCpus = value.logicalCpus; return; }
       } catch { /* Report parsing below provides the diagnostic. */ }
-      execFile('systemctl', ['--user', 'is-active', '--quiet', 't3code.service'], { timeout: 3000 }, error => {
+      Promise.all([probe('systemctl', ['--user', 'is-active', '--quiet', 't3code.service']), probe(nvidiaSmi, ['--query-gpu=temperature.gpu', '--format=csv,noheader,nounits'])]).then(([service, smi]) => {
         if (stopped || current !== child || current.exitCode !== null || current.killed) return;
         try {
-          const report = reportFromLine(line, machine, !error);
+          const report = reportFromLine(line, machine, service !== null, smi === null ? undefined : gpuTemperature(smi));
           try { report.wsl = sampleProc(); } catch (error) { console.error('WSL collector:', error); }
           const result = intake(report);
           if (result !== 204) console.error('Windows collector: report rejected:', result);

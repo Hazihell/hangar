@@ -23,6 +23,11 @@ result=$(printf '* (Connected) id VPN "TAILSCALE office" [VPN:example]\n* (Conne
 result=$(printf '* (connected) id PPP "Office \\ path "quoted"\tname" [PPP:L2TP]\n' | parse_vpns)
 [ "$result" = '[{"name":"Office \\ path \"quoted\"\u0009name","status":"connected","kind":"ppp"}]' ] && pass 'VPN names escape backslash quote and control characters' || fail 'VPN JSON escaping'
 [ "$(printf 'Available network connection services:\n' | parse_vpns)" = '[]' ] && pass 'empty VPN list' || fail 'empty VPN list'
+[ "$(printf '73.5\n' | parse_temp)" = 73.5 ] && pass 'temperature with a decimal' || fail 'temperature'
+[ "$(printf '41\n' | parse_temp)" = 41 ] && pass 'whole temperature' || fail 'whole temperature'
+for bad in '' 'nan' '-' '12 degrees' '1e3' '.5' 'Error: no sensors'; do
+  if printf '%s\n' "$bad" | parse_temp >/dev/null; then fail "bad temperature accepted: $bad"; else pass "bad temperature rejected: $bad"; fi
+done
 
 result=$(parse_processes 501 8 104 $'104 1 /bin/bash /tmp/mac-reporter.sh\n105 104 /bin/sleep\n101 1 /bin/node' < "$DIR/fixtures/ps-processes.txt")
 case "$result" in *'"pid":101,"name":"Codex Helper (Renderer)","app":"Codex","cpu":25.0000,"ram":4194304,"started":"Fri Oct 16 09:05:01 2026","own":true'*) pass 'process path, outer App, CPU normalization, RSS and start token';; *) fail 'process fields';; esac
@@ -42,7 +47,8 @@ case "$result" in *'"name":"café"'*) pass 'process names strip control characte
 
 # Exercise collection without invoking macOS commands or making HTTP requests.
 PAYLOAD=$(mktemp)
-trap 'rm -f "$PAYLOAD"' EXIT
+TEMPS_DIR=$(mktemp -d)
+trap 'rm -rf "$PAYLOAD" "$TEMPS_DIR"' EXIT
 top(){ cat "$DIR/fixtures/top.txt"; }
 vm_stat(){ cat "$DIR/fixtures/vm_stat.txt"; }
 sysctl(){ [ "$2" = hw.logicalcpu ] && echo 8 || echo 17179869184; }
@@ -53,6 +59,21 @@ df(){ cat "$DIR/fixtures/df.txt"; }
 scutil(){ [ "$SCUTIL_RESULT" = failure ] && return 1; [ "$SCUTIL_RESULT" = empty ] && return 0; cat "$DIR/fixtures/scutil-nc-list.txt"; }
 curl(){ while [ "$#" -gt 0 ]; do if [ "$1" = -d ]; then shift; printf '%s' "$1" > "$PAYLOAD"; fi; shift; done; printf 204; }
 SCUTIL_RESULT=success
+export HANGAR_TEMPS="$TEMPS_DIR/temps"
+report_once
+case $(cat "$PAYLOAD") in *'"temps"'*) fail 'no helper must omit temps';; *) pass 'no helper omits temps';; esac
+printf '#!/bin/sh\necho 73.5\n' > "$HANGAR_TEMPS"
+report_once
+case $(cat "$PAYLOAD") in *'"temps"'*) fail 'non-executable helper must omit temps';; *) pass 'non-executable helper omits temps';; esac
+chmod +x "$HANGAR_TEMPS"
+report_once
+case $(cat "$PAYLOAD") in *'"total":494384795648}],"temps":{"cpu":73.5},"vpns":'*) pass 'helper number reported as temps.cpu';; *) fail 'temps report';; esac
+printf '#!/bin/sh\nexit 1\n' > "$HANGAR_TEMPS"
+report_once
+case $(cat "$PAYLOAD") in *'"temps"'*) fail 'failing helper must omit temps';; *) pass 'failing helper omits temps';; esac
+printf '#!/bin/sh\necho oops\n' > "$HANGAR_TEMPS"
+report_once
+case $(cat "$PAYLOAD") in *'"temps"'*) fail 'non-number must omit temps';; *) pass 'non-number omits temps';; esac
 report_once
 case $(cat "$PAYLOAD") in *'"vpns":[{"name":"Steeprock","status":"connected","kind":"ppp"}]'*) pass 'successful collection includes VPNs';; *) fail 'VPN report';; esac
 SCUTIL_RESULT=empty

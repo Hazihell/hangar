@@ -32,7 +32,7 @@ Vite already uses `changeOrigin: true`, forwarding Host as `127.0.0.1:<server po
 - A Machine is **Online** when its latest report arrived less than 30 s ago; otherwise **Offline**.
 - The server stamps each report with its own clock on arrival; Machines' clocks are not trusted.
 - Reporters send every 10 s.
-- **History** keeps one point per minute: the average of the reports that arrived in that minute. Points older than 24 h are deleted. A minute with no reports has no point.
+- **History** keeps one point per minute: the average of the reports that arrived in that minute (`temp`: only of those that had a CPU Temperature, `null` if none did). Points older than 24 h are deleted. A minute with no reports has no point.
 
 ## `POST /api/report`
 
@@ -43,6 +43,7 @@ Vite already uses `changeOrigin: true`, forwarding Host as `127.0.0.1:<server po
   "ram": { "used": 8123456789, "total": 17179869184 },
   "disks": [{ "name": "Macintosh HD", "used": 301234567890, "total": 494384795648 }],
   "services": { "t3": true },
+  "temps": { "cpu": 73.5 },
   "vpns": [{ "name": "Steeprock", "status": "connected", "kind": "ppp" }]
 }
 ```
@@ -51,6 +52,7 @@ Vite already uses `changeOrigin: true`, forwarding Host as `127.0.0.1:<server po
 - `ram.used`: bytes, total minus available (cache doesn't count). macOS has no "available" figure, so the Mac sends Activity Monitor's "Memory Used": app memory + wired + compressed.
 - `disks`: every fixed drive; `used` and `total` in bytes.
 - `services`: optional. The PC reports `t3`, whether the T3 service is running.
+- `temps`: optional, `{ "cpu"?: number, "gpu"?: number }` in degrees Celsius, each from −20 to 150; the Machine's own sensors, and omitted when nothing could be read. A reading outside that range is dropped, never the whole report, and an empty object counts as absent; anything but an object is `400`. The Mac reads `cpu` from the hottest of its chip's `tdie` sensors (a helper at `~/.local/state/hangar/temps`, which `hangar setup` builds from `dashboard/reporter/temps.swift`) and has no `gpu`. The PC reads `cpu` from HWiNFO64's Gadget values in `HKCU\Software\HWiNFO64\VSB` (the one labelled `CPU (Tctl/Tdie)`, never by index; the key is gone when HWiNFO64 isn't running) and `gpu` from `nvidia-smi`.
 - `vpns`: optional. Every VPN the operating system manages, except Tailscale. Names contain 1–256 characters, no control characters or double quotes, and cannot start with `-` or `/`. `status` is `connected`, `disconnected`, `connecting` or `disconnecting`. `kind` is `ppp` for PPP-based VPNs (L2TP, PPTP) and `other` for the rest; the server picks the Mac's connect command by it. Omitted when collection fails (the server keeps the previous list); an empty array clears the list. The PC reads `Get-VpnConnection` (per-user and all-user); the Mac reads `scutil --nc list`.
 
 - `processes`: optional. The union of the 300 Processes using the most RAM and the 100 using the most CPU (or every Process when fewer), as `{ "pid", "name", "app", "cpu", "ram", "started", "own" }`:
@@ -82,8 +84,10 @@ Responses: `204` accepted; `400` malformed; `404` Machine not in the list.
         "cpu": 7.1,
         "ram": { "used": 11000000000, "total": 34282192896 },
         "disks": [{ "name": "C:", "used": 600000000000, "total": 1000000000000 }],
-        "services": { "t3": true }
+        "services": { "t3": true },
+        "temps": { "cpu": 49.5, "gpu": 38 }
       },
+      "tempLimits": { "high": 75, "hot": 85 },
       "vpns": [
         {
           "name": "Steeprock",
@@ -109,7 +113,7 @@ Responses: `204` accepted; `400` malformed; `404` Machine not in the list.
           }
         ]
       },
-      "history": [{ "t": "2026-10-16T09:29:00.000Z", "cpu": 6.8, "ram": 32.1, "disk": 60.0 }]
+      "history": [{ "t": "2026-10-16T09:29:00.000Z", "cpu": 6.8, "ram": 32.1, "disk": 60.0, "temp": 49.2 }]
     }
   ]
 }
@@ -117,11 +121,13 @@ Responses: `204` accepted; `400` malformed; `404` Machine not in the list.
 
 - `build`: a short hash of the built page's `index.html` that the server is serving (`""` when no page is built), recomputed when that file changes. A tab that sees it differ from the one it loaded with knows the Dashboard was rebuilt and should reload.
 - `lastSeen` and `usage` are `null` for a Machine that has never reported.
+- `usage.temps`: the latest report's `temps`; absent when it had none.
+- `tempLimits`: `{ "high", "hot" }` in °C, this Machine's temperature Alert thresholds (`high` is `temp.clear`, `hot` is `temp.at`, with its `machines` override applied), for coloring the reading; `null` when the temperature Alert is off.
 - `vpns`: the latest known VPNs, `[]` if none. A report omitting `vpns` keeps the previous list. `pending` is `{ "action": "connect" | "disconnect", "since": "<iso>" }` while a command is under way, else `null`. `error` is `{ "message": "...", "at": "<iso>" }` when the last command failed, else `null`.
 - `apps`: `null` until the Machine has sent Processes. `list` holds the union of the 10 Apps using the most CPU and the 10 using the most RAM, so the page can sort by either. Each App sums its Processes; `processes` lists them (up to 20, most CPU first). `quit` says whether the Dashboard may Quit it (see Quit below): for an App, whether any of its Processes may be. On the PC, one App is named `WSL`: its `ram` is the `vmmemWSL` Process's and its `cpu` the larger of that Process's and the sum of the Processes inside WSL (Windows doesn't let a user read `vmmemWSL`'s CPU time), its `quit` is always `false`, and instead of `processes` it carries `apps`, the Apps inside WSL built the same way. Kept in memory only.
 - `power`: present only on a Machine the Dashboard can put to Sleep or Shut down (today the PC, `collector: "wsl"`). `{ "actions": ["sleep", "shutdown"], "pending": { "action": "sleep" | "shutdown", "since": "<iso>" } | null, "error": { "message": "...", "at": "<iso>" } | null }`. See `POST /api/machines/:id/power`.
 - `updates`: present on every Machine. `{ "checkedAt": "<iso>" | null, "checking": bool, "items": [Update], "pending": { "items": ["<id>"], "since": "<iso>" } | null, "error": { "message": "...", "at": "<iso>" } | null }`. See Updates below.
-- `history`: oldest first, at most 1440 points. `t` is the start of the minute. `cpu`, `ram` and `disk` are percents; `disk` is the fullest disk's percent.
+- `history`: oldest first, at most 1440 points. `t` is the start of the minute. `cpu`, `ram` and `disk` are percents; `disk` is the fullest disk's percent. `temp` is the CPU Temperature in °C, or `null` for a minute whose reports had none.
 
 ## `POST /api/machines/:id/vpns/:name`
 
@@ -273,6 +279,7 @@ Each result carries the `pid`, `started` and `where` of the Process it is about,
   "disk": { "at": 90, "clear": 85 },
   "cpu": { "at": 90, "clear": 80, "for": 300 },
   "ram": { "at": 90, "clear": 85, "for": 300 },
+  "temp": { "at": 85, "clear": 75, "for": 300, "machines": { "rogers-macbook-air": { "at": 105, "clear": 95 } } },
   "offline": { "for": 120, "machines": ["stormtrooper"] },
   "vpn": true,
   "t3": true,
@@ -282,13 +289,14 @@ Each result carries the `pid`, `started` and `where` of the Process it is about,
 
 - **Disk nearly full:** a disk's percent reaches `disk.at`. Clears below `disk.clear`. One Alert per disk.
 - **CPU high / RAM high:** every report for `for` seconds is at or above `at`; two reports more than 60 s apart (a restart, sleep or Offline between them) don't count as one run. Clears when a report falls below `clear`. The Alert names the Top Apps at that moment, up to three, Apps inside WSL named as such: "Stormtrooper CPU at 97 % for 5 min: WSL node 61 %, WSL claude 18 %, chrome 6 %".
+- **CPU hot:** `usage.temps.cpu` is at or above `temp.at` (°C, 1–150) for `for` seconds, counted like CPU high. Clears when it falls below `temp.clear`. `temp.machines` replaces `at` and `clear` for a Machine: the Ryzen 7 5700X3D throttles at 89 °C, so the PC fires at 85, while the fanless M4 runs about 100 °C under load by design, so the MacBook Air fires at 105. The Alert names the Top Apps like CPU high: "Stormtrooper CPU hot: 87 °C for 5 min: WSL node 61 %, chrome 6 %". Clearing says "Stormtrooper CPU temperature back to normal: Now 72 °C". A Machine that is Online but stops reporting `temps.cpu` restarts the count, and its Alert, if firing, is replaced by a quiet "CPU temperature on Stormtrooper is no longer reported". Only the CPU's temperature Alerts; the GPU's is shown, not watched. `temp` may be `false` or absent to turn the rule off.
 - **VPN dropped:** a VPN that was `connected` becomes `disconnected` (through `connecting` or `disconnecting` too) without the Dashboard having disconnected it. A Dashboard `disconnect` doesn't count, including the report that shows it done and clears `pending`. A VPN first seen `disconnected`, or one that disappears from the list, doesn't Alert. Clears when it is `connected` again.
 - **T3 service stopped:** `services.t3` goes from `true` to `false`. Clears when `true` again.
 - **Offline:** a Machine in `offline.machines` has been Offline for `for` seconds (counted from 30 s after its last report, when it became Offline, and never from before the latest server start or detected resume). Clears when it is Online. While a Machine is Offline its other Alerts are not evaluated.
 - An Alert fires when its condition starts, never again while it holds, and not again within `cooldown` seconds of the last time it fired. When it clears, subscribers get a quiet notification with the same `tag`, which replaces the Alert ("Stormtrooper CPU back to normal").
 - After server start or a detected resume, rule timers restart and Offline, VPN-dropped and T3-stopped Alerts have a 3-minute grace period; VPN drop detection requires a connected observation after that grace, so a VPN left disconnected by a reboot never produces a delayed drop Alert.
 - Conditions already true when the server starts fire once (so two full disks Alert on first start, while Offline and T3 wait for the grace period), except a VPN, which needs to be seen `connected` first. The state of each Alert is kept in SQLite (table `alert_state`), so a restart neither repeats nor forgets Alerts.
-- A disk or VPN that stops being reported can't clear by itself: its Alert is replaced by a quiet "D: on Stormtrooper is no longer reported". The state of finished Alerts is dropped once their `cooldown` is over.
+- A disk, VPN or CPU temperature that stops being reported can't clear by itself: its Alert is replaced by a quiet "D: on Stormtrooper is no longer reported". The state of finished Alerts is dropped once their `cooldown` is over.
 - **Delivery.** The server sends each notification to every subscription at once. It counts as delivered once at least one subscription accepts it (a `2xx`; `3xx` redirects are never followed and count as refusals); with no subscriptions it isn't. A fire that isn't delivered is sent again, at most once a minute, for 10 minutes while its condition holds; after that it waits for the next occurrence. A clear is sent only for an Alert that was delivered, and is retried the same way. Every fire and every clear of an Alert is a new generation, and an acknowledgement counts only for its own generation. When a subscription accepts a push that has since been superseded (a catch-up that hung while the Alert cleared, or an older clear after a newer fire), the server immediately sends that same subscription the Alert's newest notification, so a cleared Alert doesn't stay on screen. Failures are logged to the journal (the push service's host and status); they never delay or fail report handling. Subscriptions answering `404` or `410` are deleted.
 
 Push uses the Web Push protocol (RFC 8030) with VAPID (RFC 8292) and `aes128gcm` payload encryption (RFC 8291), implemented on `node:crypto`. The server makes a VAPID key pair on first start and keeps it in `vapid.json` beside the database (`~/.local/state/hangar/vapid.json` by default), as `{ "publicKey", "privateKey" }`: the base64url 65-byte uncompressed point and the raw 32-byte scalar. Its mode is set to 600 whenever it is loaded. If the file is unreadable, malformed, or its two keys don't match, the server logs the error and turns Alerts off: it never makes a new key, since that would invalidate every subscription, and the Alerts endpoints below (except `DELETE`) answer `503` until the file is fixed. The VAPID `sub` claim is `https://github.com/Hazihell/hangar`. The payload is JSON:
@@ -317,6 +325,6 @@ The browser's `PushSubscription` as JSON (`{ endpoint, keys: { p256dh, auth } }`
 
 ## `GET /api/events`
 
-Server-sent events. Each event is named `machine`, and its data is one Machine in the same shape as above, except that `history` is replaced by `minute`: the current minute's running average, `{ t, cpu, ram, disk }`. The page replaces its last History point when `t` matches, otherwise appends it and drops points older than 24 h. `minute` is `null` when the current minute has no reports yet (as when a Machine turns Offline); the page then leaves History alone.
+Server-sent events. Each event is named `machine`, and its data is one Machine in the same shape as above, except that `history` is replaced by `minute`: the current minute's running average, `{ t, cpu, ram, disk, temp }`. The page replaces its last History point when `t` matches, otherwise appends it and drops points older than 24 h. `minute` is `null` when the current minute has no reports yet (as when a Machine turns Offline); the page then leaves History alone.
 
-The server sends an event on every report, when a Machine turns Offline, and when a VPN command starts, succeeds or fails. Events carry `apps` like `GET /api/machines` does.
+The server sends an event on every report, when a Machine turns Offline, and when a VPN command starts, succeeds or fails. Events carry `apps`, `usage.temps` and `tempLimits` like `GET /api/machines` does.

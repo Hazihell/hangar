@@ -153,7 +153,7 @@ export default function App() {
 
       <footer className="mt-auto text-[0.8125rem] text-muted-foreground">
         Online means the Machine reported in the last 30 seconds. History covers the last 24 hours; the grid marks every 3 hours
-        and every 25 %. Tap or click a trace to see that minute’s Top Apps.
+        and every 25 % (25 °C on Temperature). Tap or click a trace to see that minute’s Top Apps.
       </footer>
     </div>
   )

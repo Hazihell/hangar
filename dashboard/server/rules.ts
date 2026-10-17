@@ -1,8 +1,9 @@
 export type Vpn = { name: string; status: 'connected' | 'disconnected' | 'connecting' | 'disconnecting'; kind: 'ppp' | 'other' };
 export type Process = { pid: number; name: string; app: string; cpu: number; ram: number; started: string; own: boolean };
 export type Target = { pid: number; started: string; where?: 'wsl' };
-export type Report = { machine: string; cpu: number; ram: { used: number; total: number }; disks: { name: string; used: number; total: number }[]; services?: Record<string, boolean>; vpns?: Vpn[]; processes?: Process[]; wsl?: Process[]; reporterPid?: number };
-export type Point = { t: string; cpu: number; ram: number; disk: number };
+export type Temps = { cpu?: number; gpu?: number };
+export type Report = { machine: string; cpu: number; ram: { used: number; total: number }; disks: { name: string; used: number; total: number }[]; services?: Record<string, boolean>; vpns?: Vpn[]; processes?: Process[]; wsl?: Process[]; reporterPid?: number; temps?: Temps };
+export type Point = { t: string; cpu: number; ram: number; disk: number; temp: number | null };
 export const minute = (now: number) => Math.floor(now / 60_000) * 60_000;
 export const cutoff = (now: number) => now - 86_400_000;
 export const online = (at: number | null, now: number) => at !== null && now - at < 30_000;
@@ -13,6 +14,7 @@ const pid = (v: unknown) => Number.isSafeInteger(v) && (v as number) > 0;
 const text = (v: unknown) => typeof v === 'string' && v.length > 0 && v.length <= 256 && !/[\x00-\x1f\x7f-\x9f]/.test(v);
 const token = (v: unknown) => typeof v === 'string' && v.length <= 64;
 const processRow = (p: unknown): p is Process => object(p) && pid(p.pid) && text(p.name) && text(p.app) && finite(p.cpu) && p.cpu >= 0 && p.cpu <= 100 && finite(p.ram) && p.ram >= 0 && token(p.started) && typeof p.own === 'boolean';
+const temp = (v: unknown): v is number => finite(v) && v >= -20 && v <= 150;
 const processes = (v: unknown) => v === undefined || (Array.isArray(v) && v.length <= 2000);
 export type QuitRequest = { targets: Target[]; force: boolean; app?: never; where?: never } | { app: string; where?: 'wsl'; force: boolean; targets?: never };
 export function validQuit(v: unknown): v is QuitRequest {
@@ -22,7 +24,7 @@ export function validQuit(v: unknown): v is QuitRequest {
 }
 export function validReport(v: unknown): v is Report {
   const valid = object(v) && typeof v.machine === 'string' && v.machine.length > 0 && finite(v.cpu) && v.cpu >= 0 && v.cpu <= 100 &&
-    processes(v.processes) && processes(v.wsl) && (v.reporterPid === undefined || pid(v.reporterPid)) &&
+    processes(v.processes) && processes(v.wsl) && (v.reporterPid === undefined || pid(v.reporterPid)) && (v.temps === undefined || object(v.temps)) &&
     bytes(v.ram) && Array.isArray(v.disks) && v.disks.every(d => bytes(d) && typeof d.name === 'string' && d.name.length > 0) &&
     (v.services === undefined || (object(v.services) && Object.values(v.services).every(x => typeof x === 'boolean'))) &&
     (v.vpns === undefined || (Array.isArray(v.vpns) && v.vpns.every(vpn => object(vpn) && typeof vpn.name === 'string' && vpn.name.length > 0 && vpn.name.length <= 256 && !/^[\/-]|["\x00-\x1f\x7f-\x9f]/.test(vpn.name) && ['connected', 'disconnected', 'connecting', 'disconnecting'].includes(vpn.status) && ['ppp', 'other'].includes(vpn.kind))));
@@ -30,12 +32,21 @@ export function validReport(v: unknown): v is Report {
   // Preserve healthy Usage when an OS Process disappears or produces a malformed row.
   if (v.processes !== undefined) v.processes = v.processes.filter(processRow);
   if (v.wsl !== undefined) v.wsl = v.wsl.filter(processRow);
+  // A reading that is out of range is dropped alone, and a report left with none has no temps.
+  if (v.temps !== undefined) {
+    const temps: Temps = {};
+    if (temp(v.temps.cpu)) temps.cpu = v.temps.cpu;
+    if (temp(v.temps.gpu)) temps.gpu = v.temps.gpu;
+    if (temps.cpu === undefined && temps.gpu === undefined) delete v.temps; else v.temps = temps;
+  }
   return true;
 }
 export function percentages(report: Report) {
   return { cpu: report.cpu, ram: report.ram.used / report.ram.total * 100, disk: Math.max(0, ...report.disks.map(d => d.used / d.total * 100)) };
 }
-export function average(previous: { cpu: number; ram: number; disk: number; count: number } | undefined, report: Report) {
-  const p = percentages(report), n = previous?.count ?? 0;
-  return { cpu: ((previous?.cpu ?? 0) * n + p.cpu) / (n + 1), ram: ((previous?.ram ?? 0) * n + p.ram) / (n + 1), disk: ((previous?.disk ?? 0) * n + p.disk) / (n + 1), count: n + 1 };
+/** `temp` averages only the reports that had a CPU temperature, `tcount` of them. */
+export function average(previous: { cpu: number; ram: number; disk: number; count: number; temp: number | null; tcount: number } | undefined, report: Report) {
+  const p = percentages(report), n = previous?.count ?? 0, k = previous?.tcount ?? 0, t = report.temps?.cpu;
+  return { cpu: ((previous?.cpu ?? 0) * n + p.cpu) / (n + 1), ram: ((previous?.ram ?? 0) * n + p.ram) / (n + 1), disk: ((previous?.disk ?? 0) * n + p.disk) / (n + 1), count: n + 1,
+    temp: t === undefined ? previous?.temp ?? null : ((previous?.temp ?? 0) * k + t) / (k + 1), tcount: t === undefined ? k : k + 1 };
 }

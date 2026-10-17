@@ -7,6 +7,8 @@ export type HistoryPoint = {
   ram: number
   /** The fullest disk's percent. */
   disk: number
+  /** The CPU's average Temperature that minute, °C; null (or absent, from an older server) when none was reported. */
+  temp?: number | null
 }
 
 export type Disk = { name: string; used: number; total: number }
@@ -17,6 +19,8 @@ export type Usage = {
   ram: { used: number; total: number }
   disks: Disk[]
   services?: { t3?: boolean }
+  /** °C, each only when the Machine could read it. */
+  temps?: { cpu?: number; gpu?: number }
 }
 
 export type VpnStatus = "connected" | "disconnected" | "connecting" | "disconnecting"
@@ -117,6 +121,8 @@ export type Machine = {
   vpns: Vpn[]
   /** `null` until the Machine has sent Processes. */
   apps: Apps | null
+  /** The CPU Temperature Alert's thresholds, °C: past `high` it reads warm, past `hot` hot. Null when that Alert is off. */
+  tempLimits?: { high: number; hot: number } | null
   /** Absent unless the Dashboard can put this Machine to Sleep or Shut it down. */
   power?: Power
   /** On every Machine from a server that checks Updates. */
@@ -138,4 +144,4 @@ export type MachineEvent = Omit<Machine, "history" | "apps"> & {
   minute?: HistoryPoint | null
 }
 
-export type Channel = "cpu" | "ram" | "disk"
+export type Channel = "cpu" | "temp" | "ram" | "disk"

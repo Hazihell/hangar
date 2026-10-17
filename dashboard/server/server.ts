@@ -18,7 +18,7 @@ import { Store } from './store.ts';
 import type { Machine } from './store.ts';
 import { validReport, validQuit } from './rules.ts';
 import { startCollector, collectorPids } from './collector.ts';
-import { createAlerts, loadRules } from './alerts.ts';
+import { createAlerts, loadRules, tempLimits } from './alerts.ts';
 import type { Notification, Rules } from './alerts.ts';
 import { generateVapid, loadOrCreateVapid, send, validSubscription } from './push.ts';
 import type { FetchLike, Subscription, VapidKeys } from './push.ts';
@@ -80,7 +80,7 @@ export function createDashboard(options: { db: string; t3Db?: string; hangar?: s
       return command ? { ...vpn, pending: command.pending, error: command.error } : vpn;
     });
     if (machine.collector === 'wsl') Object.assign(value, { power: power.state(machine.id) });
-    Object.assign(value, { updates: updates.state(machine) });
+    Object.assign(value, { updates: updates.state(machine), tempLimits: tempLimits(rules, machine.id) });
     return value;
   }
   const power = createPower(exec, clock, (machine, now) => emit(machine, now), () => observeSuspension(clock()), now => { alerts?.recover(now); power.resume(now); });
@@ -164,6 +164,7 @@ export function createDashboard(options: { db: string; t3Db?: string; hangar?: s
     const report = { ...(value.processes === undefined ? {} : { processes: value.processes }), ...(value.wsl === undefined ? {} : { wsl: value.wsl }), ...(value.reporterPid === undefined ? {} : { reporterPid: value.reporterPid }), machine: value.machine, cpu: value.cpu, ram: { used: value.ram.used, total: value.ram.total },
       disks: value.disks.map(d => ({ name: d.name, used: d.used, total: d.total })),
       ...(value.services === undefined ? {} : { services: value.services }),
+      ...(value.temps === undefined ? {} : { temps: value.temps }),
       ...(value.vpns === undefined ? {} : { vpns: value.vpns.map(v => ({ name: v.name, status: v.status, kind: v.kind })) }) };
     const now = clock();
     observeSuspension(now);

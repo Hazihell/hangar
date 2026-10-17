@@ -33,6 +33,7 @@
   --color-ink-cpu: var(--ink-cpu);
   --color-ink-ram: var(--ink-ram);
   --color-ink-disk: var(--ink-disk);
+  --color-ink-temp: var(--ink-temp);
   --color-online: var(--online);
   --color-high: var(--high);
   --color-full: var(--full);
@@ -70,6 +71,7 @@
   --ink-cpu: oklch(0.5 0.17 266);
   --ink-ram: oklch(0.5 0.15 312);
   --ink-disk: oklch(0.5 0.09 182);
+  --ink-temp: oklch(0.5 0.12 128);
   --online: oklch(0.56 0.14 152);
   --high: oklch(0.53 0.12 68);
   --full: oklch(0.54 0.2 27);
@@ -94,6 +96,7 @@
     --ink-cpu: oklch(0.74 0.12 266);
     --ink-ram: oklch(0.74 0.12 312);
     --ink-disk: oklch(0.76 0.09 182);
+    --ink-temp: oklch(0.78 0.12 128);
     --online: oklch(0.77 0.15 152);
     --high: oklch(0.82 0.13 78);
     --full: oklch(0.7 0.18 25);

@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createDashboard } from './server.ts';
+import { DEFAULT_RULES } from './alerts.ts';
 test('HTTP accepts reports, rejects unknown Machines, and streams Usage', async t => {
   const dir = mkdtempSync(join(tmpdir(), 'hangar-http-'));
   let now = 120_001;
@@ -22,7 +23,7 @@ test('HTTP accepts reports, rejects unknown Machines, and streams Usage', async 
   assert.equal((await post({ ...report, at: "untrusted client clock" })).status, 204);
   const body = await (await fetch(base + '/api/machines')).json();
   assert.equal(body.now, '1970-01-01T00:02:00.001Z');
-  assert.deepEqual(body.machines[0], { id: 'pc', name: 'PC', os: 'windows', apps: null, online: true, lastSeen: body.now, usage: { at: body.now, cpu: 10, ram: report.ram, disks: report.disks, services: report.services }, vpns: [], power: { actions: ['sleep', 'shutdown'], pending: null, error: null }, updates: { checkedAt: null, checking: false, items: [], pending: null, error: null }, history: [{ t: '1970-01-01T00:02:00.000Z', cpu: 10, ram: 75, disk: 50 }] });
+  assert.deepEqual(body.machines[0], { id: 'pc', name: 'PC', os: 'windows', apps: null, online: true, lastSeen: body.now, usage: { at: body.now, cpu: 10, ram: report.ram, disks: report.disks, services: report.services }, vpns: [], power: { actions: ['sleep', 'shutdown'], pending: null, error: null }, updates: { checkedAt: null, checking: false, items: [], pending: null, error: null }, tempLimits: { high: 75, hot: 85 }, history: [{ t: '1970-01-01T00:02:00.000Z', cpu: 10, ram: 75, disk: 50, temp: null }] });
   const event = new TextDecoder().decode((await reader.read()).value);
   assert.match(event, /^event: machine\ndata: /);
   const payload = JSON.parse(event.split('data: ')[1].trim());
@@ -35,14 +36,49 @@ test('HTTP accepts reports, rejects unknown Machines, and streams Usage', async 
   assert.equal(offlinePayload.online, false); assert.equal(offlinePayload.minute, null);
   assert.equal((await post({ ...report, cpu: 90 })).status, 204);
   const rollover = (await (await fetch(base + '/api/machines')).json()).machines[0];
-  assert.deepEqual(rollover.history, [body.machines[0].history[0], { t: '1970-01-01T00:03:00.000Z', cpu: 90, ram: 75, disk: 50 }]);
+  assert.deepEqual(rollover.history, [body.machines[0].history[0], { t: '1970-01-01T00:03:00.000Z', cpu: 90, ram: 75, disk: 50, temp: null }]);
   await reader.read();
   now = 86_520_000;
   assert.equal((await (await fetch(base + '/api/machines')).json()).machines[0].history.length, 2);
   now++;
-  assert.deepEqual((await (await fetch(base + '/api/machines')).json()).machines[0].history, [{ t: '1970-01-01T00:03:00.000Z', cpu: 90, ram: 75, disk: 50 }]);
+  assert.deepEqual((await (await fetch(base + '/api/machines')).json()).machines[0].history, [{ t: '1970-01-01T00:03:00.000Z', cpu: 90, ram: 75, disk: 50, temp: null }]);
   assert.match(await (await fetch(base + '/some/page')).text(), /isn't built yet/);
   await reader.cancel();
+});
+test('HTTP keeps temperatures in Usage and History, drops bad readings, and gives each Machine its limits', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'hangar-temps-'));
+  const machines = [{ id: 'pc', name: 'PC', os: 'windows', collector: 'wsl' }, { id: 'rogers-macbook-air', name: 'MacBook Air', os: 'macos', collector: 'mac' }];
+  const app = createDashboard({ db: join(dir, 'test.db'), machines, collect: false, clock: () => 120_001, dist: join(dir, 'missing') });
+  await new Promise<void>(resolve => app.server.listen(0, '127.0.0.1', resolve));
+  t.after(async () => { await app.close(); rmSync(dir, { recursive: true }); });
+  const base = `http://127.0.0.1:${(app.server.address() as any).port}`;
+  const abort = new AbortController(); t.after(() => abort.abort());
+  const reader = (await fetch(base + '/api/events', { signal: abort.signal })).body!.getReader(); await reader.read();
+  const report = { machine: 'pc', cpu: 10, ram: { used: 3, total: 4 }, disks: [{ name: 'C:', used: 1, total: 2 }] };
+  const post = (v: unknown) => fetch(base + '/api/report', { method: 'POST', body: JSON.stringify(v) });
+  assert.equal((await post({ ...report, temps: 'hot' })).status, 400);
+  assert.equal((await post({ ...report, temps: { cpu: 60, gpu: 400 } })).status, 204);
+  const event = JSON.parse(new TextDecoder().decode((await reader.read()).value).split('data: ')[1].trim());
+  assert.deepEqual(event.usage.temps, { cpu: 60 });
+  assert.equal(event.minute.temp, 60);
+  assert.deepEqual(event.tempLimits, { high: 75, hot: 85 });
+  assert.equal((await post({ ...report, temps: { cpu: 70, gpu: 40 } })).status, 204);
+  assert.equal((await post({ ...report, temps: { cpu: 'x' } })).status, 204);
+  const body = await (await fetch(base + '/api/machines')).json();
+  assert.equal(body.machines[0].usage.temps, undefined);
+  assert.deepEqual(body.machines[0].history.map((p: any) => p.temp), [65]);
+  assert.deepEqual(body.machines[1].tempLimits, { high: 95, hot: 105 });
+  assert.equal(body.machines[1].usage, null);
+  await reader.cancel();
+});
+test('the temperature limits are null when the rule is off', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'hangar-temps-'));
+  const { temp, ...rules } = DEFAULT_RULES;
+  const app = createDashboard({ db: join(dir, 'test.db'), machines: [{ id: 'pc', name: 'PC', os: 'windows', collector: 'wsl' }], rules, collect: false, dist: join(dir, 'missing') });
+  await new Promise<void>(resolve => app.server.listen(0, '127.0.0.1', resolve));
+  t.after(async () => { await app.close(); rmSync(dir, { recursive: true }); });
+  const body = await (await fetch(`http://127.0.0.1:${(app.server.address() as any).port}/api/machines`)).json();
+  assert.equal(body.machines[0].tempLimits, null);
 });
 test('static files have content types, SPA fallback, and cannot escape dist', async t => {
   const { mkdirSync, writeFileSync, symlinkSync } = await import('node:fs');

@@ -28,7 +28,7 @@ export function bucketsOf(history: HistoryPoint[]): Bucket[] {
  * cause is.
  */
 export function peakOf(bucket: Bucket, channel: Channel): Minute {
-  return bucket.minutes.reduce((best, m) => (m[channel] > best[channel] ? m : best))
+  return bucket.minutes.reduce((best, m) => ((m[channel] ?? -Infinity) > (best[channel] ?? -Infinity) ? m : best))
 }
 
 /** The bucket under a time on the trace, or the nearest within one bucket; -1 over a gap. */
