@@ -30,6 +30,13 @@ const GIVE_UP_MS = 15_000
 const QUIET_MS = 40_000
 /** A fetch that takes longer than this has failed. */
 const FETCH_MS = 10_000
+/**
+ * While watching closely (a Machine the Dashboard runs on is going to sleep or
+ * shutting down), the server is checked this often, with this deadline: a
+ * sleeping server doesn't close the stream, it just goes silent.
+ */
+const CLOSE_WATCH_MS = 4_000
+const CLOSE_FETCH_MS = 3_500
 
 export function useDashboard() {
   const [state, setState] = useState<DashboardState>({
@@ -39,6 +46,7 @@ export function useDashboard() {
     lastContact: null,
   })
   const reconnectRef = useRef<() => void>(() => {})
+  const closely = useRef(false)
 
   useEffect(() => {
     let disposed = false
@@ -61,10 +69,10 @@ export function useDashboard() {
       update((s) => ({ ...s, connection: "unreachable" }))
 
     /** The snapshot, with a deadline over the whole request, body included. */
-    async function fetchMachines() {
+    async function fetchMachines(deadline = FETCH_MS) {
       const controller = new AbortController()
       inflight.add(controller)
-      const timer = setTimeout(() => controller.abort(), FETCH_MS)
+      const timer = setTimeout(() => controller.abort(), deadline)
       try {
         const res = await fetch("/api/machines", { cache: "no-store", signal: controller.signal })
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -161,6 +169,25 @@ export function useDashboard() {
       }
     }, QUIET_MS / 4)
 
+    // Close watch: is the server still there?
+    let probing = false
+    const closeWatch = setInterval(async () => {
+      if (!closely.current || probing || pending) return
+      if (source?.readyState !== EventSource.OPEN) return
+      probing = true
+      try {
+        await fetchMachines(CLOSE_FETCH_MS)
+      } catch {
+        if (disposed || !closely.current) return
+        clearTimeout(giveUpTimer)
+        giveUpTimer = undefined
+        unreachable()
+        connect()
+      } finally {
+        probing = false
+      }
+    }, CLOSE_WATCH_MS)
+
     const wake = () => {
       if (document.visibilityState !== "visible") return
       if (!source || source.readyState === EventSource.CLOSED) connect()
@@ -181,6 +208,7 @@ export function useDashboard() {
       disposed = true
       for (const controller of inflight) controller.abort()
       clearInterval(watchdog)
+      clearInterval(closeWatch)
       clearTimeout(retryTimer)
       clearTimeout(giveUpTimer)
       source?.close()
@@ -190,5 +218,9 @@ export function useDashboard() {
   }, [])
 
   const retry = useCallback(() => reconnectRef.current(), [])
-  return { ...state, retry }
+  /** Check on the server every few seconds while a power command may take it away. */
+  const watchClosely = useCallback((on: boolean) => {
+    closely.current = on
+  }, [])
+  return { ...state, retry, watchClosely }
 }

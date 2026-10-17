@@ -1,3 +1,4 @@
+import { createPower } from './power.ts';
 import { mayQuit } from './apps.ts';
 import { quitProcesses } from './quit.ts';
 import type { Local } from './quit.ts';
@@ -40,6 +41,7 @@ export function createDashboard(options: { db: string; machines?: Machine[]; clo
     execFile('systemctl', ['--user', 'show', '-p', 'MainPID', '--value', 't3code.service'], { timeout: 3000, encoding: 'utf8' }, (error, stdout) => resolve(!error && /^\d+\s*$/.test(stdout) ? Number(stdout.trim()) : null));
   }));
   const startedAt = clock();
+  let lastObservedAt = startedAt;
   const streams = new Set<ServerResponse>(), statuses = new Map<string, boolean>();
   const exec = options.exec ?? execFile;
   const ancestors = new Set<number>();
@@ -75,8 +77,10 @@ export function createDashboard(options: { db: string; machines?: Machine[]; clo
       const command = commands.get(machine.id)?.get(vpn.name);
       return command ? { ...vpn, pending: command.pending, error: command.error } : vpn;
     });
+    if (machine.collector === 'wsl') Object.assign(value, { power: power.state(machine.id) });
     return value;
   }
+  const power = createPower(exec, clock, (machine, now) => emit(machine, now), () => observeSuspension(clock()), now => { alerts?.recover(now); power.resume(now); });
   // Alerts. The VAPID key lives beside the database; if it is broken they stay off (the endpoints answer 503)
   // rather than replacing it, which would invalidate every subscription.
   const rules = options.rules ?? loadRules(resolve(root, 'alerts.json'));
@@ -85,6 +89,7 @@ export function createDashboard(options: { db: string; machines?: Machine[]; clo
     vapid = options.vapid ? loadOrCreateVapid(options.vapid) : options.db === ':memory:' ? generateVapid() : loadOrCreateVapid(join(dirname(options.db), 'vapid.json'));
   } catch (error: any) { console.error(`Alerts are off: ${error?.message ?? error}`); }
   const alerts = vapid ? createAlerts(rules, store.alertState()) : null;
+  alerts?.recover(startedAt);
   let savedAlerts = alerts ? JSON.stringify(alerts.state()) : '';
   const inflight = new Set<Promise<unknown>>();
   function track(work: Promise<unknown>) {
@@ -146,6 +151,7 @@ export function createDashboard(options: { db: string; machines?: Machine[]; clo
       ...(value.services === undefined ? {} : { services: value.services }),
       ...(value.vpns === undefined ? {} : { vpns: value.vpns.map(v => ({ name: v.name, status: v.status, kind: v.kind })) }) };
     const now = clock();
+    observeSuspension(now);
     try { store.intake(report, now); } catch (error) { console.error('Dashboard intake:', error); return 500; }
     const completed: { machine: string; vpn: string }[] = [];
     if (value.vpns !== undefined) {
@@ -209,6 +215,21 @@ export function createDashboard(options: { db: string; machines?: Machine[]; clo
         // Each result names the Process it's about (pid plus started token), so the page can follow and Force quit exactly that Process even if the PID is reused.
         const results = (await quitProcesses(machine, targets, value.force, report, store.protection, exec, options.local)).map((r, i) => ({ ...r, started: targets[i].started, ...(targets[i].where ? { where: targets[i].where } : {}) }));
         res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ results })); return;
+      }
+      const powerPath = path.match(/^\/api\/machines\/([^/]+)\/power$/);
+      if (req.method === 'POST' && powerPath) {
+        let id; try { id = decodeURIComponent(powerPath[1]); } catch { res.writeHead(400).end(); return; }
+        if (!/^application\/(?:[\w.+-]+\+)?json(?:\s*;|$)/i.test(req.headers['content-type'] ?? '')) { res.writeHead(400).end(); return; }
+        let body = '', size = 0;
+        for await (const chunk of req) { size += chunk.length; if (size > 4096) { res.writeHead(400).end(); return; } body += chunk; }
+        let value; try { value = JSON.parse(body); } catch { res.writeHead(400).end(); return; }
+        if (!value || !['sleep', 'shutdown'].includes(value.action)) { res.writeHead(400).end(); return; }
+        const machine = machines.find((m: Machine) => m.id === id);
+        if (!machine || machine.collector !== 'wsl') { res.writeHead(404).end(); return; }
+        const now = clock(); observeSuspension(now);
+        if (!store.snapshot(machine, now).online || power.state(id).pending) { res.writeHead(409).end(); return; }
+        power.start(machine, value.action, now);
+        res.writeHead(202, { 'Content-Type': 'application/json' }).end(JSON.stringify(power.state(id))); return;
       }
       const vpnPath = path.match(/^\/api\/machines\/([^/]+)\/vpns\/([^/]+)$/);
       if (req.method === 'POST' && vpnPath) {
@@ -290,8 +311,16 @@ export function createDashboard(options: { db: string; machines?: Machine[]; clo
       res.writeHead(200, { 'Content-Type': types[extname(real)] ?? 'application/octet-stream', 'Cache-Control': file === resolve(dist, 'index.html') ? 'no-cache' : decoded.startsWith('/assets/') ? 'public, max-age=31536000, immutable' : 'no-cache' }).end(readFileSync(real));
     } catch (error) { console.error(error); if (!res.headersSent) res.writeHead(500); res.end(); }
   });
+  function observeSuspension(now: number) {
+    // Check before evaluating reports or command callbacks too: either can run before the interval after resume.
+    if (now - lastObservedAt > 35_000) {
+      alerts?.recover(now);
+      power.resume(now);
+    }
+    lastObservedAt = now;
+  }
   function tick() {
-    const now = clock(); store.prune(now);
+    const now = clock(); observeSuspension(now); power.tick(now); store.prune(now);
     for (const m of machines) {
       let changed = false;
       for (const command of commands.get(m.id)?.values() ?? []) {
@@ -305,7 +334,7 @@ export function createDashboard(options: { db: string; machines?: Machine[]; clo
   const offline = setInterval(tick, 5000);
   const heartbeat = setInterval(() => { for (const stream of streams) stream.write(': heartbeat\n\n'); }, 20_000);
   const stops = options.collect === false ? [] : machines.filter((m: Machine) => m.collector === 'wsl').slice(0, 1).map((m: Machine) => startCollector(m.id, intake));
-  return { server, tick, async idle() { while (inflight.size) await Promise.allSettled([...inflight]); }, async close() { closed = true; clearInterval(protectionTimer); for (const timer of timers.values()) clearTimeout(timer); timers.clear(); commands.clear(); clearInterval(offline); clearInterval(heartbeat); stops.forEach((stop: () => void) => stop()); for (const stream of streams) stream.end(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); store.close(); } };
+  return { server, tick, async idle() { while (inflight.size) await Promise.allSettled([...inflight]); }, async close() { closed = true; power.close(); clearInterval(protectionTimer); for (const timer of timers.values()) clearTimeout(timer); timers.clear(); commands.clear(); clearInterval(offline); clearInterval(heartbeat); stops.forEach((stop: () => void) => stop()); for (const stream of streams) stream.end(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); store.close(); } };
 }
 function statExists(path: string) { try { statSync(path); return true; } catch { return false; } }
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

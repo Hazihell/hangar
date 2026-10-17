@@ -154,7 +154,7 @@ export async function turnOn(): Promise<AlertsStatus> {
 
   const key = await serverKey()
   try {
-    await navigator.serviceWorker.register("/sw.js", { scope: "/" })
+    await navigator.serviceWorker.register("/sw.js", { scope: "/", updateViaCache: "none" })
   } catch {
     throw new AlertsError("The browser couldn’t install the Dashboard’s service worker.")
   }

@@ -71,6 +71,17 @@ export type MinuteApp = { name: string; where?: "wsl"; cpu: number; ram: number 
 
 export type MinuteResponse = { t: string; apps: MinuteApp[] }
 
+export type PowerAction = "sleep" | "shutdown"
+
+/** Only on a Machine the Dashboard can put to Sleep or Shut down (the PC, where the Dashboard runs). */
+export type Power = {
+  actions: PowerAction[]
+  /** Sent; clears when the server sees it happened (it resumes or restarts). */
+  pending: { action: PowerAction; since: string } | null
+  /** It failed or didn't happen within 2 minutes; stays until the next power command. */
+  error: { message: string; at: string } | null
+}
+
 export type Machine = {
   id: string
   name: string
@@ -82,6 +93,8 @@ export type Machine = {
   vpns: Vpn[]
   /** `null` until the Machine has sent Processes. */
   apps: Apps | null
+  /** Absent unless the Dashboard can put this Machine to Sleep or Shut it down. */
+  power?: Power
   history: HistoryPoint[]
 }
 

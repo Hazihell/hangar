@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 import { formatRelative } from "@/lib/format"
+import type { PowerAction } from "@/lib/types"
 
 export function LoadingSheets() {
   return (
@@ -39,8 +40,8 @@ export function Unreachable({ onRetry }: { onRetry: () => void }) {
         Can’t reach the Dashboard server.
       </h1>
       <p className="text-[1.0625rem] text-muted-foreground">
-        So there’s no word on any Machine yet. The page keeps trying every few seconds; if it stays like this, check that
-        Stormtrooper is on and that Tailscale is connected here.
+        So there’s no word on any Machine yet. The page keeps trying every few seconds. The Dashboard runs on
+        Stormtrooper: if it’s asleep or off, wake it with Alexa; otherwise check that Tailscale is connected here.
       </p>
       <div>
         <Button variant="outline" size="lg" onClick={onRetry}>
@@ -68,5 +69,40 @@ export function StaleNotice({ heardAt, now, onRetry }: { heardAt: number | null;
         </Button>
       </AlertAction>
     </Alert>
+  )
+}
+
+/**
+ * The connection dropped while a Machine the Dashboard runs on was going to
+ * sleep or shutting down: it went, and the Dashboard with it. In place of the
+ * verdict until the page reconnects.
+ */
+export function PowerAway({
+  name,
+  action,
+  heardAt,
+  now,
+}: {
+  name: string
+  action: PowerAction
+  heardAt: number | null
+  now: number
+}) {
+  const asleep = action === "sleep"
+  return (
+    <section aria-labelledby="verdict" className="flex max-w-2xl flex-col gap-4">
+      <h1 id="verdict" className="text-[1.75rem] leading-[1.15] font-semibold tracking-[-0.012em] [word-spacing:0.06em] text-balance sm:text-[2.25rem]">
+        {asleep ? `${name} is asleep.` : `${name} has shut down.`}
+      </h1>
+      <p className="text-[1.0625rem] text-pretty text-muted-foreground">
+        The Dashboard runs on {name} and {asleep ? "is asleep with it" : "went down with it"}.{" "}
+        {asleep ? "Wake" : "Turn on"} {name} with Alexa and this page reconnects on its own.
+      </p>
+      <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
+        <span aria-hidden className="size-2 shrink-0 rounded-full bg-muted-foreground/60 motion-safe:animate-breathe" />
+        Waiting for {name}
+        {heardAt !== null && ` · last heard ${formatRelative(heardAt, now)}`}
+      </p>
+    </section>
   )
 }

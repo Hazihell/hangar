@@ -449,3 +449,35 @@ test('loadRules reads alerts.json, and falls back to the defaults with a warning
     assert.deepEqual(loadRules(write(custom), warn), custom);
   } finally { rmSync(dir, { recursive: true }); }
 });
+
+test('start/resume recovery suppresses Offline, T3 and VPN for three minutes on every Machine', () => {
+  const a = createAlerts(rules()), ev = watch(a);
+  ev([mac(at(0), vpn('connected'))], at(0));
+  // Simulate startup with stored connected VPN state, and then the same recovery on resume.
+  const b = createAlerts(rules(), a.state()), run = watch(b);
+  for (const recovered of [10, 1000]) {
+    b.recover(at(recovered));
+    const offline: MachineView = { id: 'stormtrooper', name: 'Stormtrooper', online: false, lastSeen: iso(at(0)), usage: null };
+    const views = (s: number) => [offline, { ...mac(at(s), vpn('disconnected')), usage: machine(at(s), { t3: false }).usage }];
+    for (let s = recovered; s < recovered + 180; s += 5) assert.deepEqual(run(views(s), at(s)), []);
+    const out = run(views(recovered + 180), at(recovered + 180));
+    if (recovered === 10) assert.deepEqual(out.map(n => n.tag).sort(), ['mac:t3', 'stormtrooper:offline']);
+    else assert.deepEqual(out, [], 'already-active problems stay active through another recovery');
+    assert.equal(out.some(n => n.tag.includes(':vpn:')), false, 'a VPN left down by reboot never becomes a delayed drop');
+  }
+  run([mac(at(1200), vpn('connected'))], at(1200));
+  assert.equal(run([mac(at(1210), vpn('disconnected'))], at(1210)).filter(n => n.tag.includes(':vpn:') && !n.quiet).length, 1);
+});
+
+test('recovery restarts CPU/RAM streaks even with short gaps and old sample timestamps, preserving active Alerts', () => {
+  const a = createAlerts(rules({ cpu: { at: 90, clear: 80, for: 30 }, ram: { at: 90, clear: 80, for: 30 } })), ev = watch(a);
+  ev([machine(at(0), { cpu: 99, ramPct: 99, disks: [['C:', 99]], t3: false })], at(0));
+  ev([machine(at(20), { cpu: 99, ramPct: 99, disks: [['C:', 99]], t3: false })], at(20));
+  a.recover(at(25));
+  assert.deepEqual(ev([machine(at(20), { cpu: 99, ramPct: 99, disks: [['C:', 99]], t3: false })], at(30)), []);
+  assert.deepEqual(ev([machine(at(50), { cpu: 99, ramPct: 99, disks: [['C:', 99]], t3: false })], at(50)), []);
+  assert.deepEqual(ev([machine(at(55), { cpu: 99, ramPct: 99, disks: [['C:', 99]], t3: false })], at(55)).map(n => n.tag).sort(), ['stormtrooper:cpu', 'stormtrooper:ram']);
+  a.recover(at(60));
+  assert.deepEqual(ev([machine(at(65), { cpu: 99, ramPct: 99, disks: [['C:', 99]], t3: false })], at(65)), [], 'active alerts are not cleared or refired by resetting timers');
+  assert.deepEqual(a.active().map(n => n.tag).sort(), ['stormtrooper:cpu', 'stormtrooper:disk:C:', 'stormtrooper:ram', 'stormtrooper:t3']);
+});

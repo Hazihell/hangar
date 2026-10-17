@@ -2,7 +2,8 @@
 // Dev stand-in for dashboard/server per dashboard/API.md, with fake Usage,
 // VPNs, Apps and Alerts. Serves GET /api/machines, GET /api/events,
 // POST /api/machines/:id/vpns/:name, GET /api/machines/:id/minutes/:t,
-// POST /api/machines/:id/quit and the /api/alerts/* endpoints. No dependencies.
+// POST /api/machines/:id/quit, POST /api/machines/:id/power and the
+// /api/alerts/* endpoints. No dependencies.
 //
 //   node scripts/mock-server.mjs [port] [--extra] [--calm]
 //
@@ -42,6 +43,14 @@
 //     name: every Process of it that may be quit (results carry started/where).
 //   - The Mac needs --calm (Online), else 409. The mock never sends events for
 //     removals by itself; the next report does.
+//
+// Power: only Stormtrooper has `power` (the Dashboard runs on it). Sleep goes
+// pending, then ~1.5 s later the "server" goes to sleep with it: every
+// connection, the event stream included, is dropped and refused for
+// MOCK_ASLEEP_MS (default 25 s); then it wakes, pending clears and reports
+// resume. Shut down is "blocked by an app": after MOCK_POWER_FAIL_MS (default
+// 8 s) it clears pending and sets the server's error. MOCK_SHUTDOWN=ok makes
+// Shut down go down like Sleep instead.
 //
 // Like the real server, every mutating request (not /api/report) must look
 // same-origin: a Host of 127.0.0.1/localhost on this port, an Origin (if any)
@@ -362,6 +371,7 @@ function makeMachines(now) {
         services: { t3: true },
       },
       vpns: [vpn("Steeprock", "connected")],
+      power: { actions: ["sleep", "shutdown"], pending: null, error: null },
       history,
       live: true,
     })
@@ -460,6 +470,7 @@ function view(m, now) {
     usage: m.usage,
     vpns: m.vpns.map((v) => ({ ...v })),
     apps: appsView(m),
+    ...(m.power ? { power: { ...m.power } } : {}),
   }
 }
 
@@ -598,7 +609,41 @@ function runVpnCommand(m, v, action) {
   }, vpnMs)
 }
 
+// Power: asleep, the mock answers nothing at all, as if the PC were off.
+const asleepMs = Number(process.env.MOCK_ASLEEP_MS ?? 25_000)
+const powerFailMs = Number(process.env.MOCK_POWER_FAIL_MS ?? 8_000)
+let asleep = false
+const sockets = new Set()
+
+function runPowerCommand(m, action) {
+  m.power.pending = { action, since: iso(Date.now()) }
+  m.power.error = null
+  broadcast({ ...view(m, Date.now()), minute: null })
+  if (action === "shutdown" && process.env.MOCK_SHUTDOWN !== "ok") {
+    setTimeout(() => {
+      m.power.pending = null
+      m.power.error = { message: `${m.name} didn't shut down — an app may have blocked it`, at: iso(Date.now()) }
+      broadcast({ ...view(m, Date.now()), minute: null })
+    }, powerFailMs)
+    return
+  }
+  setTimeout(() => {
+    asleep = true
+    console.log(`power: ${m.id} ${action} -> down for ${asleepMs / 1000} s`)
+    for (const socket of sockets) socket.destroy()
+    clients.clear()
+    setTimeout(() => {
+      asleep = false
+      m.power.pending = null
+      m.lastSeenMs = Date.now()
+      broadcast({ ...view(m, Date.now()), minute: null })
+      console.log(`power: ${m.id} is back`)
+    }, asleepMs)
+  }, 1_500)
+}
+
 setInterval(() => {
+  if (asleep) return
   const now = Date.now()
   for (const m of machines) if (m.live) broadcast(report(m, now))
 }, Number(process.env.MOCK_REPORT_MS ?? REPORT_EVERY))
@@ -621,6 +666,10 @@ function crossOrigin(req) {
 
 const server = createServer((req, res) => {
   const url = new URL(req.url ?? "/", "http://localhost")
+  if (asleep) {
+    req.socket.destroy()
+    return
+  }
 
   if (req.method !== "GET" && url.pathname !== "/api/report" && crossOrigin(req)) {
     res.writeHead(403, { "content-type": "text/plain" }).end("Not from the Dashboard's origin.\n")
@@ -670,6 +719,20 @@ const server = createServer((req, res) => {
       if (!isOnline(m, Date.now()) || v.pending) return reply(409)
       runVpnCommand(m, v, action)
       reply(202)
+    })
+    return
+  }
+
+  const powerPath = url.pathname.match(/^\/api\/machines\/([^/]+)\/power$/)
+  if (req.method === "POST" && powerPath) {
+    readJson(req, res, true, (body) => {
+      const action = isObject(body) ? body.action : undefined
+      if (action !== "sleep" && action !== "shutdown") return send(res, 400)
+      const m = machines.find((x) => x.id === decodeURIComponent(powerPath[1]))
+      if (!m?.power) return send(res, 404)
+      if (!isOnline(m, Date.now()) || m.power.pending) return send(res, 409)
+      runPowerCommand(m, action)
+      sendJson(res, 202, m.power)
     })
     return
   }
@@ -792,6 +855,11 @@ const server = createServer((req, res) => {
 
   res.writeHead(404, { "content-type": "text/plain" })
   res.end("Not found\n")
+})
+
+server.on("connection", (socket) => {
+  sockets.add(socket)
+  socket.on("close", () => sockets.delete(socket))
 })
 
 server.listen(port, "127.0.0.1", () => {

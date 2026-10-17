@@ -1,0 +1,127 @@
+<!doctype html>
+<!--
+  Shown by the service worker (sw.js) when a page load can't reach the server
+  at all: the Dashboard runs on Stormtrooper, so when it's asleep or off there
+  is nothing to load. Self-contained: no requests of its own besides the retry.
+-->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#f3f5f2" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#161a18" media="(prefers-color-scheme: dark)" />
+    <title>Hangar · Can’t reach Stormtrooper</title>
+    <style>
+      :root {
+        --background: oklch(0.955 0.007 160);
+        --foreground: oklch(0.24 0.012 240);
+        --muted: oklch(0.48 0.014 220);
+        --border: oklch(0.875 0.012 160);
+        --button: oklch(0.993 0.003 160);
+        color-scheme: light dark;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --background: oklch(0.165 0.008 170);
+          --foreground: oklch(0.93 0.006 160);
+          --muted: oklch(0.71 0.014 165);
+          --border: oklch(0.3 0.012 170);
+          --button: oklch(0.205 0.009 170);
+        }
+      }
+      * { box-sizing: border-box; }
+      html { -webkit-text-size-adjust: 100%; }
+      body {
+        margin: 0;
+        min-height: 100dvh;
+        background: var(--background);
+        color: var(--foreground);
+        font: 400 1rem/1.5 "Archivo Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      .page {
+        max-width: 78rem;
+        margin: 0 auto;
+        padding: max(1.25rem, env(safe-area-inset-top)) 1rem max(2rem, env(safe-area-inset-bottom));
+        display: flex;
+        flex-direction: column;
+        gap: 2rem;
+      }
+      header { display: flex; align-items: center; gap: 0.5rem; font-size: 0.9375rem; font-weight: 600; letter-spacing: -0.005em; }
+      header svg { width: 1.25rem; height: 1.25rem; border-radius: 5px; }
+      main { max-width: 36rem; display: flex; flex-direction: column; gap: 1rem; }
+      h1 {
+        margin: 0;
+        font-size: 1.75rem;
+        line-height: 1.15;
+        font-weight: 600;
+        letter-spacing: -0.012em;
+        word-spacing: 0.06em;
+        text-wrap: balance;
+      }
+      p { margin: 0; font-size: 1.0625rem; color: var(--muted); text-wrap: pretty; }
+      .status { display: flex; align-items: center; gap: 0.5rem; font-size: 0.875rem; }
+      .dot { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--muted); opacity: 0.6; }
+      @media (prefers-reduced-motion: no-preference) {
+        .dot { animation: breathe 2.4s ease-in-out infinite; }
+      }
+      @keyframes breathe { 50% { opacity: 0.2; } }
+      button {
+        align-self: flex-start;
+        height: 2.5rem;
+        padding: 0 1rem;
+        border: 1px solid var(--border);
+        border-radius: 0.5rem;
+        background: var(--button);
+        color: var(--foreground);
+        font: inherit;
+        font-size: 0.875rem;
+        font-weight: 500;
+        cursor: pointer;
+      }
+      button:hover { border-color: var(--muted); }
+      button:focus-visible { outline: 2px solid var(--muted); outline-offset: 2px; }
+      @media (min-width: 640px) {
+        .page { padding: 2rem 2rem 2rem; gap: 2.5rem; }
+        h1 { font-size: 2.25rem; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <header>
+        <svg viewBox="0 0 64 64" aria-hidden="true">
+          <rect width="64" height="64" rx="14" fill="#eef2ee" />
+          <g stroke="#c7d3c9" stroke-width="1.5"><path d="M8 22h48M8 34h48M8 46h48M22 10v44M36 10v44" /></g>
+          <path d="M8 44c5 0 6-10 11-10s6 6 10 6 5-18 10-18 5 8 9 8" fill="none" stroke="#2f4fc7" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" />
+          <circle cx="48" cy="30" r="5" fill="#2f4fc7" />
+        </svg>
+        Hangar
+      </header>
+      <main>
+        <h1>Hangar can’t be reached.</h1>
+        <p>
+          It runs on Stormtrooper, which may be asleep or off. Wake it with Alexa, then reload. This page also tries
+          again by itself.
+        </p>
+        <p class="status" role="status"><span class="dot" aria-hidden="true"></span><span id="state">Waiting for Stormtrooper</span></p>
+        <button type="button" id="reload">Reload</button>
+      </main>
+    </div>
+    <script>
+      const reload = () => location.reload()
+      document.getElementById("reload").addEventListener("click", reload)
+      // Back as soon as the Dashboard answers again.
+      const check = async () => {
+        try {
+          const res = await fetch("/api/machines", { cache: "no-store" })
+          if (res.ok) reload()
+        } catch {}
+      }
+      setInterval(check, 10000)
+      window.addEventListener("online", check)
+      document.addEventListener("visibilitychange", () => document.visibilityState === "visible" && check())
+    </script>
+  </body>
+</html>

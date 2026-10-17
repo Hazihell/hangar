@@ -50,6 +50,14 @@ _Avoid_: culprits, offenders
 Asking a Process or App to close cleanly, as closing its window would. **Force quit** ends it without asking, and is offered only after Quit hasn't worked. Only your own Processes can be quit, never ones the Dashboard or your access to it depends on.
 _Avoid_: kill, terminate
 
+**Sleep**:
+Putting a Machine into a low-power state that keeps its open Apps ready to resume when it wakes.
+_Avoid_: suspend, standby
+
+**Shut down**:
+Asking a Machine to close its Apps and turn off. An App with unsaved work may stop it.
+_Avoid_: power off, force shutdown
+
 **Alert**:
 A browser push notification about a problem on a Machine: a disk nearly full, CPU or RAM high for minutes on end, a VPN dropped, the T3 service stopped, or the PC Offline. When the problem clears, the Alert is quietly replaced by one saying so. Each browser or phone opts in.
 _Avoid_: alarm, warning
