@@ -2,6 +2,8 @@
 # Scratch-HOME tests for bin/hangar. Never touches the real home.
 # Works on macOS and GNU/Linux. Exits 1 if any case fails.
 SRC="$(cd "$(dirname "$0")/.." && pwd)"; T=$(mktemp -d /tmp/agents-t.XXXX); cd $T
+# systemctl reaches this user's real services whatever HOME is, so no test may run the real one.
+mkdir -p $T/nosys; printf '#!/bin/sh\n[ "$2" = is-active ] && exit 3\nexit 0\n' > $T/nosys/systemctl; chmod +x $T/nosys/systemctl; export PATH=$T/nosys:$PATH
 pass(){ echo "PASS $*"; }; fail(){ echo "FAIL $*"; FAILS=1; }; FAILS=0
 edit(){ perl -pi -e "$1" "$2"; }   # in-place edit; sed -i differs between BSD and GNU
 # Seed a fresh repo from the working tree, without its .git, so no real remote is ever reachable
@@ -102,7 +104,7 @@ stub brew 'case "$1" in update) ;; outdated) echo "gh (2.1.0) < 2.4.0" ;; list) 
 stub launchctl '[ "$1" = print ] && exit 0; echo "launchctl $*" >> '$CALLS
 stub darwin 'true'; rm $ST/darwin
 mk C; C=$T/C; git clone -q $T/remote.git $T/D; git -C $T/D config user.email t@t; git -C $T/D config user.name d
-SP=$ST:/usr/bin:/bin
+SP=$ST:$T/nosys:/usr/bin:/bin
 hg(){ HOME=$C PATH=$SP bash $C/.agents/bin/hangar "$@"; }   # Linux
 hgm(){ HOME=$C PATH=$SP bash $C/.agents/bin/hangar "$@"; }
 mac(){ printf '#!/bin/sh\n[ "$1" = -s ] && echo Darwin || exec /usr/bin/uname "$@"\n' > $ST/uname; chmod +x $ST/uname; }
