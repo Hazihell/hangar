@@ -34,7 +34,9 @@ export function buildApps(report: Partial<Report>, machine: Machine, at: string,
   const list = allApps(report.processes ?? [], machine, undefined, protection, report.reporterPid);
   if (machine.collector === 'wsl') {
     const processes = (report.processes ?? []).filter(p => executable(p.name) === 'vmmemwsl');
-    if (processes.length || report.wsl !== undefined) list.push({ name: 'WSL', cpu: processes.reduce((s, p) => s + p.cpu, 0), ram: processes.reduce((s, p) => s + p.ram, 0), count: report.wsl?.length ?? 0, quit: false, processes: [], apps: top(allApps(report.wsl ?? [], machine, 'wsl', protection), 10) });
+    // Windows won't tell a user process vmmemWSL's CPU time, so the WSL App's CPU is at least what its Processes add up to.
+    const cpu = Math.min(100, Math.max(processes.reduce((s, p) => s + p.cpu, 0), (report.wsl ?? []).reduce((s, p) => s + p.cpu, 0)));
+    if (processes.length || report.wsl !== undefined) list.push({ name: 'WSL', cpu, ram: processes.reduce((s, p) => s + p.ram, 0), count: report.wsl?.length ?? 0, quit: false, processes: [], apps: top(allApps(report.wsl ?? [], machine, 'wsl', protection), 10) });
   }
   return { at, list: top(list, 10) };
 }

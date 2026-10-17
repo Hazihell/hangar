@@ -19,6 +19,21 @@ function gridTicks(now: number): number[] {
   return ticks
 }
 
+/**
+ * Room labels need, in px, at the axis's 11px type: half of "00:00" (centred
+ * on its tick), "now" (right-aligned at the end) and a gap between them.
+ */
+const HALF_CLOCK = 17
+const NOW_LABEL = 22
+const LABEL_GAP = 8
+
+/** A clock label at `t` neither runs into "now" nor gets clipped at the left edge. */
+function clearOfEdges(t: number, now: number, plotWidth: number): boolean {
+  if (!(plotWidth > 0)) return now - t > 2 * HOUR && t - (now - DAY) > HOUR
+  const px = plotWidth / DAY
+  return (now - t) * px >= HALF_CLOCK + LABEL_GAP + NOW_LABEL && (t - (now - DAY)) * px >= HALF_CLOCK
+}
+
 export const LABELS: Record<Channel, string> = { cpu: "CPU", ram: "RAM", disk: "Fullest disk" }
 
 /** The plot inside a trace, in px from its box: where time runs. */
@@ -89,9 +104,19 @@ export function Trace({
             axisLine={false}
             tickMargin={6}
             interval={0}
-            tick={({ x, y, payload }: { x: number | string; y: number | string; payload: { value: number } }) => {
+            tick={({
+              x,
+              y,
+              width,
+              payload,
+            }: {
+              x: number | string
+              y: number | string
+              width?: number | string
+              payload: { value: number }
+            }) => {
               const t = payload.value
-              const label = t === now ? "now" : new Date(t).getHours() % 6 === 0 && now - t > 2 * HOUR ? formatClock(t) : ""
+              const label = t === now ? "now" : new Date(t).getHours() % 6 === 0 && clearOfEdges(t, now, Number(width)) ? formatClock(t) : ""
               return (
                 <text x={x} y={y} dy="0.71em" textAnchor={t === now ? "end" : "middle"} className="fill-muted-foreground tnum text-[0.6875rem]">
                   {label}
