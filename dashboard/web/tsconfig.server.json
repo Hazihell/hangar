@@ -13,6 +13,6 @@
     "strict": true,
     "erasableSyntaxOnly": true
   },
-  "include": ["../server/**/*.ts", "../contract.ts"],
-  "exclude": ["../server/**/*.test.ts"]
+  "include": ["../server/**/*.ts", "../contract.ts", "scripts/dev-backend/**/*.ts"],
+  "exclude": ["../server/**/*.test.ts", "scripts/dev-backend/**/*.test.ts"]
 }
