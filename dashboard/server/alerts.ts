@@ -170,6 +170,14 @@ function restore(state: unknown): AlertsState {
 export function createAlerts(rules: Rules, initial?: unknown) {
   const s = restore(initial);
   const cooldownMs = rules.cooldown * 1000;
+  let recoveredAt: number | null = null;
+  const connectivity = (tag: string) => /:(offline|t3|vpn:.*)$/.test(tag);
+  function recover(now: number) {
+    recoveredAt = now;
+    for (const e of Object.values(s.entries)) { e.since = null; e.sampleAt = null; }
+    // A connection from before sleep/reboot is not evidence of a later drop.
+    s.vpns = {};
+  }
 
   const entry = (tag: string): Entry => (s.entries[tag] ??= fresh());
   const note = (tag: string, n: Msg, quiet: boolean, gen: number): Notification => ({ title: n.title, body: n.body, tag, machine: n.machine, quiet, gen });
@@ -227,7 +235,7 @@ export function createAlerts(rules: Rules, initial?: unknown) {
     const e = entry(tag);
     if (value >= rule.at) {
       const parsed = Date.parse(usage.at ?? '');
-      const at = Number.isFinite(parsed) && parsed <= now ? parsed : now;
+      const at = Math.max(Number.isFinite(parsed) && parsed <= now ? parsed : now, recoveredAt ?? 0);
       if (e.since === null || e.sampleAt === null || at - e.sampleAt > MAX_GAP) e.since = at;
       e.sampleAt = Math.max(at, e.sampleAt ?? at);
     } else { e.since = null; e.sampleAt = null; }
@@ -243,6 +251,8 @@ export function createAlerts(rules: Rules, initial?: unknown) {
 
   function evaluate(machines: MachineView[], now: number, ctx: Context = {}): Notification[] {
     const out: Notification[] = [];
+    const grace = recoveredAt !== null && now < recoveredAt + 180_000;
+    const observedFrom = Math.max(ctx.observedFrom ?? 0, recoveredAt ?? 0);
     const completed = new Set((ctx.completedDisconnects ?? []).map(c => `${c.machine}:vpn:${c.vpn}`));
     for (const m of machines) {
       if (rules.offline.machines.includes(m.id)) {
@@ -251,9 +261,9 @@ export function createAlerts(rules: Rules, initial?: unknown) {
         const lastSeen = m.lastSeen ? Date.parse(m.lastSeen) : NaN;
         let start: number | null = null;
         if (m.online) e.since = null;
-        else if (Number.isFinite(lastSeen)) start = Math.max(lastSeen + ONLINE_FOR, ctx.observedFrom ?? 0);
-        else start = e.since = Math.max(e.since ?? now, ctx.observedFrom ?? 0); // never reported: count from when the Dashboard first noticed
-        step(tag, m.id, now, start !== null && now - start >= rules.offline.for * 1000, m.online,
+        else if (Number.isFinite(lastSeen)) start = Math.max(lastSeen + ONLINE_FOR, observedFrom);
+        else start = e.since = Math.max(e.since ?? now, observedFrom); // never reported: count from when the Dashboard first noticed
+        step(tag, m.id, now, !grace && start !== null && now - start >= rules.offline.for * 1000, m.online,
           () => ({ title: `${m.name} is Offline`, body: Number.isFinite(lastSeen) ? `Last seen ${formatSeconds((now - lastSeen) / 1000)} ago` : 'It has never reported' }),
           () => ({ title: `${m.name} is back Online`, body: '' }), out);
       }
@@ -281,7 +291,7 @@ export function createAlerts(rules: Rules, initial?: unknown) {
 
       if (rules.t3 && typeof usage.services?.t3 === 'boolean') {
         const running = usage.services.t3;
-        step(`${m.id}:t3`, m.id, now, !running, running,
+        step(`${m.id}:t3`, m.id, now, !grace && !running, running,
           () => ({ title: `T3 service stopped on ${m.name}`, body: 'It is not running any more' }),
           () => ({ title: `T3 service running again on ${m.name}`, body: '' }), out);
       }
@@ -294,11 +304,11 @@ export function createAlerts(rules: Rules, initial?: unknown) {
           // Disconnecting from the Dashboard is not a drop; neither is the report that shows it done.
           const intended = vpn.pending?.action === 'disconnect' || completed.has(tag);
           const wasConnected = s.vpns[tag] === 'connected';
-          step(tag, m.id, now, wasConnected && vpn.status === 'disconnected' && !intended, vpn.status === 'connected',
+          step(tag, m.id, now, !grace && wasConnected && vpn.status === 'disconnected' && !intended, vpn.status === 'connected',
             () => ({ title: `${vpn.name} dropped on ${m.name}`, body: 'The VPN disconnected on its own' }),
             () => ({ title: `${vpn.name} reconnected on ${m.name}`, body: '' }), out);
           // "Previously connected" survives connecting and disconnecting; only a plain disconnect or an intended one ends it.
-          if (vpn.status === 'connected' && !intended) s.vpns[tag] = 'connected';
+          if (!grace && vpn.status === 'connected' && !intended) s.vpns[tag] = 'connected';
           else if (vpn.status === 'disconnected' || intended) delete s.vpns[tag];
         }
         // A VPN that left the list can't have dropped, and its Alert can't clear by itself.
@@ -310,7 +320,7 @@ export function createAlerts(rules: Rules, initial?: unknown) {
     // Notifications no subscription has accepted yet: retry every minute for ten, then give up.
     for (const [tag, e] of Object.entries(s.entries)) {
       const box = e.outbox;
-      if (!box) continue;
+      if (!box || (grace && box.kind === 'fire' && connectivity(tag))) continue;
       if (now - box.first > RETRY_FOR) {
         if (box.kind === 'clear') e.delivered = false; // out of reach; stop insisting
         e.outbox = null;
@@ -355,5 +365,5 @@ export function createAlerts(rules: Rules, initial?: unknown) {
     return Object.entries(s.entries).filter(([, e]) => e.active && e.latest?.kind === 'fire').map(([tag, e]) => note(tag, e.latest!, false, e.latest!.gen));
   }
 
-  return { evaluate, delivered, current, active, state: (): AlertsState => structuredClone(s) };
+  return { evaluate, recover, delivered, current, active, state: (): AlertsState => structuredClone(s) };
 }

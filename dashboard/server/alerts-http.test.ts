@@ -151,6 +151,7 @@ test('POST /api/alerts/test and DELETE /api/alerts/subscriptions', async t => {
 
 test('a Dashboard VPN disconnect, through the real POST and report flow, sends no Alert; a later real drop does', async t => {
   const f = await fixture(t);
+  for (let i = 0; i < 36; i++) { f.advance(5000); f.app.tick(); }
   t.after(() => rmSync(f.dir, { recursive: true }));
   const phone = device('phone');
   await f.json('POST', '/api/alerts/subscriptions', phone.subscription);
@@ -300,4 +301,29 @@ test('an older clear acknowledged late does not hide a newer one, and a stale cl
   f.app.tick();
   await f.app.idle();
   assert.equal(f.calls.length, 5, 'no retry: the newest clear was accepted');
+});
+
+test('server start and detected resume each grant three minutes before Offline and T3 pushes', async t => {
+  const f = await fixture(t, { rules: { ...rules, offline: { for: 120, machines: ['pc'] } } });
+  t.after(() => rmSync(f.dir, { recursive: true }));
+  const phone = device('recovery');
+  await f.json('POST', '/api/alerts/subscriptions', phone.subscription);
+  await f.report({ services: { t3: false } });
+  for (let i = 0; i < 35; i++) { f.advance(5000); f.app.tick(); }
+  await f.app.idle(); assert.equal(f.calls.length, 0);
+  f.advance(5000); f.app.tick(); await f.app.idle();
+  assert.deepEqual(f.calls.map(c => phone.decrypt(c.body).tag), ['pc:offline']);
+  // Clear the existing Offline and T3 is now able to fire after the startup grace.
+  await f.report({ services: { t3: false } }); await f.app.idle();
+  assert.deepEqual(f.calls.slice(1).map(c => phone.decrypt(c.body).tag).sort(), ['pc:offline', 'pc:t3']);
+  await f.report({ services: { t3: true } }); await f.app.idle();
+  const beforeResume = f.calls.length;
+  f.advance(3600_000);
+  // A report can beat the interval on wake; it must also detect the gap.
+  await f.report({ services: { t3: false } }); await f.app.idle();
+  for (let i = 0; i < 35; i++) { f.advance(5000); f.app.tick(); }
+  await f.app.idle(); assert.equal(f.calls.length, beforeResume);
+  f.advance(5000); await f.report({ services: { t3: false } }); await f.app.idle();
+  // Cooldown is long past: T3 fires again, with no false Offline during grace.
+  assert.deepEqual(f.calls.slice(beforeResume).map(c => phone.decrypt(c.body).tag), ['pc:t3']);
 });

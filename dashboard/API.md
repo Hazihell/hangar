@@ -118,6 +118,7 @@ Responses: `204` accepted; `400` malformed; `404` Machine not in the list.
 - `lastSeen` and `usage` are `null` for a Machine that has never reported.
 - `vpns`: the latest known VPNs, `[]` if none. A report omitting `vpns` keeps the previous list. `pending` is `{ "action": "connect" | "disconnect", "since": "<iso>" }` while a command is under way, else `null`. `error` is `{ "message": "...", "at": "<iso>" }` when the last command failed, else `null`.
 - `apps`: `null` until the Machine has sent Processes. `list` holds the union of the 10 Apps using the most CPU and the 10 using the most RAM, so the page can sort by either. Each App sums its Processes; `processes` lists them (up to 20, most CPU first). `quit` says whether the Dashboard may Quit it (see Quit below): for an App, whether any of its Processes may be. On the PC, one App is named `WSL`: its `ram` is the `vmmemWSL` Process's and its `cpu` the larger of that Process's and the sum of the Processes inside WSL (Windows doesn't let a user read `vmmemWSL`'s CPU time), its `quit` is always `false`, and instead of `processes` it carries `apps`, the Apps inside WSL built the same way. Kept in memory only.
+- `power`: present only on a Machine the Dashboard can put to Sleep or Shut down (today the PC, `collector: "wsl"`). `{ "actions": ["sleep", "shutdown"], "pending": { "action": "sleep" | "shutdown", "since": "<iso>" } | null, "error": { "message": "...", "at": "<iso>" } | null }`. See `POST /api/machines/:id/power`.
 - `history`: oldest first, at most 1440 points. `t` is the start of the minute. `cpu`, `ram` and `disk` are percents; `disk` is the fullest disk's percent.
 
 ## `POST /api/machines/:id/vpns/:name`
@@ -138,6 +139,27 @@ How the command runs:
 | Mac (`ssh`) | `networksetup -connectpppoeservice <name>` for `kind: "ppp"` (`scutil --nc start` can't read the L2TP shared secret from the keychain); `scutil --nc start <name>` otherwise | `scutil --nc stop <name>` |
 
 The VPN's `pending` is set when the command starts and cleared when a report shows the VPN `connected` (for `connect`) or `disconnected` (for `disconnect`). The command failing (non-zero exit) or 90 s passing without that report clears `pending` and sets `error`. An `error` stays until the next command on that VPN, or until a report shows the VPN reached what was asked. Each of these changes sends a `machine` event. Pending commands and errors live in memory only; a server restart forgets them.
+
+## `POST /api/machines/:id/power`
+
+```json
+{ "action": "sleep" }
+```
+
+Puts the Machine to Sleep or Shuts it down. The Dashboard runs on the PC, so it goes with it: the page loses its connection until the PC is woken (by Wake-on-LAN, outside the Dashboard) and the server is back. Requires a JSON `Content-Type`, like the VPN endpoint.
+
+Responses: `202` with the Machine's new `power`; `400` `action` isn't `sleep` or `shutdown`; `404` no such Machine, or it has no `power`; `409` the Machine is Offline, or a power command is already pending.
+
+The server sets `pending`, sends a `machine` event, and runs the command about 1.5 s later so the response and event reach the page first:
+
+| `action` | PC command |
+| --- | --- |
+| `sleep` | `powershell.exe`: `[System.Windows.Forms.Application]::SetSuspendState('Suspend', $false, $false)`. Suspend, not hibernate, though hibernation is enabled. |
+| `shutdown` | `shutdown.exe /s /t 0`. Not forced: an app with unsaved work can stop it. |
+
+`pending` clears when the server sees it was suspended (its wall clock jumped while it wasn't running, or the `sleep` command returned success, which happens only once the PC is awake again), or on the server's next start. Either counts as resuming for Alerts. The command failing, or 2 minutes passing with the server still running, clears `pending` and sets `error` (for example, an app blocked Shut down). An `error` stays until the next power command. Pending commands and errors live in memory only.
+
+Sleeping, shutting down and coming back are not Alerts: after the server starts or resumes from suspension, every rule's timer starts over, and for 3 minutes no Offline, VPN or T3 service Alert fires on any Machine. Offline and T3 service problems still there after that fire as usual.
 
 ## `GET /api/machines/:id/minutes/:t`
 
@@ -206,9 +228,10 @@ Each result carries the `pid`, `started` and `where` of the Process it is about,
 - **CPU high / RAM high:** every report for `for` seconds is at or above `at`; two reports more than 60 s apart (a restart, sleep or Offline between them) don't count as one run. Clears when a report falls below `clear`. The Alert names the Top Apps at that moment, up to three, Apps inside WSL named as such: "Stormtrooper CPU at 97 % for 5 min: WSL node 61 %, WSL claude 18 %, chrome 6 %".
 - **VPN dropped:** a VPN that was `connected` becomes `disconnected` (through `connecting` or `disconnecting` too) without the Dashboard having disconnected it. A Dashboard `disconnect` doesn't count, including the report that shows it done and clears `pending`. A VPN first seen `disconnected`, or one that disappears from the list, doesn't Alert. Clears when it is `connected` again.
 - **T3 service stopped:** `services.t3` goes from `true` to `false`. Clears when `true` again.
-- **Offline:** a Machine in `offline.machines` has been Offline for `for` seconds (counted from 30 s after its last report, when it became Offline, and never from before the server started). Clears when it is Online. While a Machine is Offline its other Alerts are not evaluated.
+- **Offline:** a Machine in `offline.machines` has been Offline for `for` seconds (counted from 30 s after its last report, when it became Offline, and never from before the latest server start or detected resume). Clears when it is Online. While a Machine is Offline its other Alerts are not evaluated.
 - An Alert fires when its condition starts, never again while it holds, and not again within `cooldown` seconds of the last time it fired. When it clears, subscribers get a quiet notification with the same `tag`, which replaces the Alert ("Stormtrooper CPU back to normal").
-- Conditions already true when the server starts fire once (so two full disks Alert on first start), except a VPN, which needs to be seen `connected` first. The state of each Alert is kept in SQLite (table `alert_state`), so a restart neither repeats nor forgets Alerts.
+- After server start or a detected resume, rule timers restart and Offline, VPN-dropped and T3-stopped Alerts have a 3-minute grace period; VPN drop detection requires a connected observation after that grace, so a VPN left disconnected by a reboot never produces a delayed drop Alert.
+- Conditions already true when the server starts fire once (so two full disks Alert on first start, while Offline and T3 wait for the grace period), except a VPN, which needs to be seen `connected` first. The state of each Alert is kept in SQLite (table `alert_state`), so a restart neither repeats nor forgets Alerts.
 - A disk or VPN that stops being reported can't clear by itself: its Alert is replaced by a quiet "D: on Stormtrooper is no longer reported". The state of finished Alerts is dropped once their `cooldown` is over.
 - **Delivery.** The server sends each notification to every subscription at once. It counts as delivered once at least one subscription accepts it (a `2xx`; `3xx` redirects are never followed and count as refusals); with no subscriptions it isn't. A fire that isn't delivered is sent again, at most once a minute, for 10 minutes while its condition holds; after that it waits for the next occurrence. A clear is sent only for an Alert that was delivered, and is retried the same way. Every fire and every clear of an Alert is a new generation, and an acknowledgement counts only for its own generation. When a subscription accepts a push that has since been superseded (a catch-up that hung while the Alert cleared, or an older clear after a newer fire), the server immediately sends that same subscription the Alert's newest notification, so a cleared Alert doesn't stay on screen. Failures are logged to the journal (the push service's host and status); they never delay or fail report handling. Subscriptions answering `404` or `410` are deleted.
 

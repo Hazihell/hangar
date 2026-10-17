@@ -3,6 +3,7 @@ import { MinutePanel, Scrubber, type Mark } from "@/components/minute"
 import { Card } from "@/components/ui/card"
 import { Meter } from "@/components/ui/meter"
 import { Separator } from "@/components/ui/separator"
+import { PowerLine, PowerMenu, usePower } from "@/components/power-control"
 import { PenMark } from "@/components/status"
 import { Trace } from "@/components/trace"
 import { VpnList } from "@/components/vpn-list"
@@ -18,7 +19,7 @@ import {
 } from "@/lib/format"
 import { toTrace, type TracePoint } from "@/lib/history"
 import { bucketsOf, type Bucket } from "@/lib/minutes"
-import type { Channel, Disk, Machine } from "@/lib/types"
+import type { Channel, Disk, Machine, PowerAction } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { useMemo, useState } from "react"
 
@@ -49,6 +50,8 @@ export function MachineSheet({
   now,
   heardAt = null,
   highlighted = false,
+  onPowerSent,
+  away = null,
 }: {
   machine: Machine
   now: number
@@ -56,6 +59,10 @@ export function MachineSheet({
   heardAt?: number | null
   /** Briefly ringed when an Alert or a link brings you to it. */
   highlighted?: boolean
+  /** The server took a Sleep or Shut down for this Machine. */
+  onPowerSent?: (action: PowerAction) => void
+  /** It went to sleep or shut down, and took the Dashboard with it: said instead of Online. */
+  away?: PowerAction | null
 }) {
   const { usage, online } = machine
   const points = useMemo(() => toTrace(machine.history), [machine.history])
@@ -69,6 +76,8 @@ export function MachineSheet({
     : heardAt !== null
       ? "The Dashboard can’t reach the server."
       : null
+  const power = usePower(machine, onPowerSent)
+  const powerLineId = `${machine.id}-power`
 
   return (
     <Card
@@ -87,11 +96,26 @@ export function MachineSheet({
           <h2 id={`${machine.id}-name`} className="text-xl leading-tight font-semibold tracking-[-0.01em]">
             {machine.name}
           </h2>
-          <span className="text-sm text-muted-foreground">{OS_NAMES[machine.os] ?? machine.os}</span>
+          <span className="flex items-center gap-3 text-sm text-muted-foreground">
+            {OS_NAMES[machine.os] ?? machine.os}
+            {machine.power && (
+              <PowerMenu
+                machine={machine}
+                state={power}
+                locked={locked}
+                describedBy={power.pending || power.error ? powerLineId : undefined}
+              />
+            )}
+          </span>
         </div>
         <p className="flex items-center gap-2 text-[0.9375rem]">
-          <PenMark online={online} />
-          {online ? (
+          <PenMark online={online && away === null} />
+          {away !== null ? (
+            <span className="text-muted-foreground">
+              <span className="font-medium text-foreground/80">{away === "sleep" ? "Went to sleep" : "Shut down"}</span>
+              {heardAt !== null && ` · last heard ${formatRelative(heardAt, now)}`}
+            </span>
+          ) : online ? (
             <span className="font-medium">
               Online
               {heardAt !== null && (
@@ -114,6 +138,7 @@ export function MachineSheet({
             </span>
           )}
         </p>
+        {machine.power && away === null && <PowerLine id={powerLineId} state={power} muted={!online} />}
       </header>
 
       <Separator />
