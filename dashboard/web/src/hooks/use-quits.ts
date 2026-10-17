@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useEffect, useRef } from "react"
 
-import { QuitError, sendQuit, targetKey, type QuitRequest, type QuitResult, type QuitTarget } from "@/lib/quit"
+import { useMachineCommands } from "@/hooks/use-machine-command"
+import { sendQuit, targetKey, type QuitRequest, type QuitResult, type QuitTarget } from "@/lib/quit"
 import { findApp } from "@/lib/apps"
 import type { Apps, Where } from "@/lib/types"
 
@@ -54,78 +55,69 @@ const IDLE: QuitState = { kind: "idle", note: null }
  * only counts while its run is the subject's latest.
  */
 export function useQuits(machineId: string, apps: Apps | null, present: (key: string) => boolean) {
-  const [runs, setRuns] = useState<Record<string, Run>>({})
-  const nextId = useRef(0)
   const appsAt = useRef<string | null>(apps?.at ?? null)
   const listed = useRef(present)
-  const timers = useRef(new Set<ReturnType<typeof setTimeout>>())
-
   useEffect(() => {
     appsAt.current = apps?.at ?? null
     listed.current = present
   }, [apps, present])
 
-  useEffect(() => {
-    const t = timers.current
-    return () => t.forEach(clearTimeout)
-  }, [])
-
-  const later = useCallback((fn: () => void, ms: number) => {
-    const timer = setTimeout(() => {
-      timers.current.delete(timer)
-      fn()
-    }, ms)
-    timers.current.add(timer)
-  }, [])
-
-  const quit = useCallback(
-    async (subject: string, request: QuitRequest, force: boolean) => {
-      const id = ++nextId.current
-      const patch = (fn: (run: Run) => Run) =>
-        setRuns((all) => (all[subject]?.id === id ? { ...all, [subject]: fn(all[subject]) } : all))
-      setRuns((all) => ({
-        ...all,
-        [subject]: {
-          id,
-          force,
-          targets: "targets" in request ? request.targets : [],
-          app: "app" in request ? { name: request.app, where: request.where } : null,
-          unlisted: new Set(),
-          phase: "sending",
-          results: {},
-          appsAt: null,
-          ripe: false,
-          error: null,
-        },
-      }))
-      try {
-        const answers = await sendQuit(machineId, request, force)
-        // Processes: one result per target, in order. An App: the server says
-        // which Processes it tried, each by the identity it checked; a report
-        // that arrived meanwhile may list another Process under the same PID,
-        // so nothing here is looked up again.
-        const targets: QuitTarget[] =
-          "targets" in request
-            ? request.targets
-            : answers.map((r) => {
-                const where = r.where ?? request.where
-                return { pid: r.pid, started: r.started ?? "", ...(where ? { where } : {}) }
-              })
-        const results: Record<string, QuitResult> = {}
-        targets.forEach((t, i) => {
-          const r = answers[i]
-          if (r) results[targetKey(t)] = r
-        })
-        const unlisted = new Set(targets.map(targetKey).filter((key) => !listed.current(key)))
-        patch((run) => ({ ...run, phase: "answered", targets, unlisted, results, appsAt: appsAt.current }))
-        later(() => patch((run) => ({ ...run, ripe: true })), FORCE_AFTER_MS)
-      } catch (error) {
-        const message = error instanceof QuitError ? error.message : "The request couldn’t be sent."
-        patch((run) => ({ ...run, phase: "refused", error: message }))
-      }
+  type Input = { request: QuitRequest; force: boolean }
+  const command = useMachineCommands({
+    retain: { settleMs: FORCE_AFTER_MS },
+    fallback: "The request couldn’t be sent.",
+    send: async ({ request, force }: Input) => {
+      const answers = await sendQuit(machineId, request, force)
+      // Processes: one result per target, in order. An App: the server says
+      // which Processes it tried, each by the identity it checked; a report
+      // that arrived meanwhile may list another Process under the same PID,
+      // so nothing here is looked up again.
+      const targets: QuitTarget[] =
+        "targets" in request
+          ? request.targets
+          : answers.map((r) => {
+              const where = r.where ?? request.where
+              return {
+                pid: r.pid,
+                started: r.started ?? "",
+                ...(where ? { where } : {}),
+              }
+            })
+      const results: Record<string, QuitResult> = {}
+      targets.forEach((t, i) => {
+        const r = answers[i]
+        if (r) results[targetKey(t)] = r
+      })
+      const unlisted = new Set(
+        targets.map(targetKey).filter((key) => !listed.current(key))
+      )
+      return { targets, results, unlisted, appsAt: appsAt.current }
     },
-    [machineId, later]
+  })
+  const runs: Record<string, Run> = Object.fromEntries(
+    Object.entries(command.attempts).map(([subject, a]) => [
+      subject,
+      {
+        id: a.id,
+        force: a.input.force,
+        targets:
+          a.result?.targets ??
+          ("targets" in a.input.request ? a.input.request.targets : []),
+        app:
+          "app" in a.input.request
+            ? { name: a.input.request.app, where: a.input.request.where }
+            : null,
+        unlisted: a.result?.unlisted ?? new Set<string>(),
+        results: a.result?.results ?? {},
+        appsAt: a.result?.appsAt ?? null,
+        phase: a.phase,
+        ripe: a.settled,
+        error: a.error,
+      },
+    ])
   )
+  const quit = (subject: string, request: QuitRequest, force: boolean) =>
+    command.run({ request, force }, subject)
 
   /** The wait is over: FORCE_AFTER_MS have passed and a newer report came. */
   const waited = (run: Run) => run.ripe && apps?.at !== run.appsAt

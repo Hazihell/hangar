@@ -1,8 +1,5 @@
-import { JSON_HEADERS, readMessage } from "@/lib/http"
+import { postCommand } from "@/lib/machine-command"
 import type { Machine, T3Thread, Update, Updates } from "@/lib/types"
-
-/** An update command the server refused, or that never reached it. */
-export class UpdateCommandError extends Error {}
 
 const REFUSALS: Record<number, string> = {
   400: "The server didn’t accept that list.",
@@ -11,40 +8,17 @@ const REFUSALS: Record<number, string> = {
   409: "Not now: the Machine is Offline, something is already updating, or the item can’t be updated from here.",
 }
 
-const SEND_MS = 10_000
-
-async function post(path: string, body?: unknown): Promise<Response> {
-  try {
-    return await fetch(path, {
-      method: "POST",
-      headers: JSON_HEADERS,
-      body: JSON.stringify(body ?? {}),
-      signal: AbortSignal.timeout(SEND_MS),
-    })
-  } catch {
-    throw new UpdateCommandError("Couldn’t reach the server.")
-  }
-}
-
-async function refusal(res: Response, refusals: Record<number, string>): Promise<UpdateCommandError> {
-  const said = await res.text().then(readMessage, () => null)
-  return new UpdateCommandError(said ?? refusals[res.status] ?? `The server couldn’t take it (HTTP ${res.status}).`)
-}
-
 /** `POST /api/machines/:id/updates`: updates those items, in that order. */
 export async function sendUpdate(machineId: string, items: string[]): Promise<Updates | null> {
-  const res = await post(`/api/machines/${encodeURIComponent(machineId)}/updates`, { items })
-  if (res.ok) return ((await res.json().catch(() => null)) as Updates | null) ?? null
-  throw await refusal(res, REFUSALS)
+  const res = await postCommand(`/api/machines/${encodeURIComponent(machineId)}/updates`, { items }, { refusals: REFUSALS, fallback: "The server couldn’t take it" })
+  return ((await res.json().catch(() => null)) as Updates | null) ?? null
 }
 
 /** `POST /api/machines/:id/updates/check`: checks now. */
 export async function checkNow(machineId: string): Promise<void> {
-  const res = await post(`/api/machines/${encodeURIComponent(machineId)}/updates/check`)
-  if (res.ok) return
-  throw await refusal(res, {
-    ...REFUSALS,
-    409: "Not now: a check is already running, or the Machine is Offline.",
+  await postCommand(`/api/machines/${encodeURIComponent(machineId)}/updates/check`, {}, {
+    refusals: { ...REFUSALS, 409: "Not now: a check is already running, or the Machine is Offline." },
+    fallback: "The server couldn’t take it",
   })
 }
 
