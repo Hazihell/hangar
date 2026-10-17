@@ -1,3 +1,4 @@
+import { readMessage } from "@/lib/http"
 import type { VpnAction, VpnStatus } from "@/lib/types"
 
 /** A VPN command the server refused, or that never reached it. */
@@ -6,6 +7,7 @@ export class VpnCommandError extends Error {}
 /** Said when the server's answer carries no message of its own. */
 const REFUSALS: Record<number, string> = {
   400: "The server didn’t accept that command.",
+  403: "The server only takes this from the Dashboard’s own address.",
   404: "This Machine no longer reports that VPN.",
   409: "Not now: the Machine is Offline, or a command is already under way.",
 }
@@ -34,23 +36,6 @@ export async function sendVpnCommand(machineId: string, name: string, action: Vp
 
   const said = await res.text().then(readMessage, () => null)
   throw new VpnCommandError(said ?? REFUSALS[res.status] ?? `The server couldn’t take the command (HTTP ${res.status}).`)
-}
-
-/** A short message from a response body: plain text, or JSON `error`/`message`. */
-function readMessage(body: string): string | null {
-  let text = body.trim()
-  if (!text) return null
-  if (text.startsWith("{")) {
-    try {
-      const value = JSON.parse(text)
-      text = typeof value?.message === "string" ? value.message : typeof value?.error === "string" ? value.error : ""
-    } catch {
-      return null
-    }
-  }
-  if (!text || text.length > 200 || text.startsWith("<")) return null
-  const sentence = text[0].toUpperCase() + text.slice(1)
-  return /[.!?]$/.test(sentence) ? sentence : `${sentence}.`
 }
 
 /** The status a command ends in. */

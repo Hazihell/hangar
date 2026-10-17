@@ -14,6 +14,16 @@ export function formatBytes(bytes: number, { unit = true } = {}): string {
   return unit ? `${n}${NNBSP}${label}` : n
 }
 
+const MiB = 1024 ** 2
+
+/** An App's or Process's RAM: MB below a gigabyte, otherwise like formatBytes. */
+export function formatRam(bytes: number): string {
+  const mb = bytes / MiB
+  if (mb >= 999.5) return formatBytes(bytes)
+  if (mb < 1) return `<1${NNBSP}MB`
+  return `${Math.round(mb)}${NNBSP}MB`
+}
+
 /** "used of total", sharing the unit when both fall in the same one. */
 export function formatUsedOfTotal(used: number, total: number): string {
   const sameUnit = (used >= TiB) === (total >= TiB)

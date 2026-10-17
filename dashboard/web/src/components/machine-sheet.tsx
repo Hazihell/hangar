@@ -1,3 +1,5 @@
+import { AppsSection } from "@/components/apps-list"
+import { MinutePanel, Scrubber, type Mark } from "@/components/minute"
 import { Card } from "@/components/ui/card"
 import { Meter } from "@/components/ui/meter"
 import { Separator } from "@/components/ui/separator"
@@ -15,9 +17,10 @@ import {
   type Level,
 } from "@/lib/format"
 import { toTrace, type TracePoint } from "@/lib/history"
+import { bucketsOf, type Bucket } from "@/lib/minutes"
 import type { Channel, Disk, Machine } from "@/lib/types"
 import { cn } from "@/lib/utils"
-import { useMemo } from "react"
+import { useMemo, useState } from "react"
 
 const OS_NAMES: Record<string, string> = { windows: "Windows", macos: "macOS", linux: "Linux" }
 
@@ -30,27 +33,50 @@ const LEVEL_TEXT: Record<Level, string> = {
   full: "text-full",
 }
 
-/** One Machine as a recorder sheet: status, three channels, drives, services, VPNs. */
+/** Shared by a sheet's three traces: they run on one time axis. */
+type Scrub = {
+  buckets: Bucket[]
+  hover: Mark | null
+  pin: Mark | null
+  hintId: string
+  setHover: (mark: Mark | null) => void
+  setPin: (mark: Mark | null) => void
+}
+
+/** One Machine as a recorder sheet: status, three channels, drives, services, VPNs, Apps. */
 export function MachineSheet({
   machine,
   now,
   heardAt = null,
+  highlighted = false,
 }: {
   machine: Machine
   now: number
   /** Set while the server can't be reached: when we last heard from it (server clock). */
   heardAt?: number | null
+  /** Briefly ringed when an Alert or a link brings you to it. */
+  highlighted?: boolean
 }) {
   const { usage, online } = machine
   const points = useMemo(() => toTrace(machine.history), [machine.history])
+  const buckets = useMemo(() => bucketsOf(machine.history), [machine.history])
+  const [hover, setHover] = useState<Mark | null>(null)
+  const [pin, setPin] = useState<Mark | null>(null)
+  const scrub: Scrub = { buckets, hover, pin, hintId: `${machine.id}-scrub-hint`, setHover, setPin }
   const lastSeen = machine.lastSeen ? Date.parse(machine.lastSeen) : null
+  const locked = !online
+    ? `${machine.name} is Offline.`
+    : heardAt !== null
+      ? "The Dashboard can’t reach the server."
+      : null
 
   return (
     <Card
       id={machine.id}
       aria-labelledby={`${machine.id}-name`}
       className={cn(
-        "scroll-mt-6 gap-0 rounded-xl py-0 text-base ring-1 transition-colors duration-200",
+        "scroll-mt-6 gap-0 rounded-xl py-0 text-base ring-1 outline-2 outline-offset-4 outline-transparent transition-[background-color,outline-color] duration-200",
+        highlighted && "outline-ring duration-700",
         online
           ? "bg-card ring-border shadow-[0_1px_2px_oklch(0.3_0.02_200/0.06),0_4px_16px_-8px_oklch(0.3_0.02_200/0.12)] dark:shadow-none"
           : "bg-transparent ring-border"
@@ -103,6 +129,7 @@ export function MachineSheet({
               points={points}
               now={now}
               lifted={!online}
+              scrub={scrub}
             />
             <ChannelRow
               channel="ram"
@@ -113,8 +140,22 @@ export function MachineSheet({
               points={points}
               now={now}
               lifted={!online}
+              scrub={scrub}
             />
-            <DiskChannel disks={usage.disks} points={points} now={now} lifted={!online} />
+            <DiskChannel disks={usage.disks} points={points} now={now} lifted={!online} scrub={scrub} />
+            <p id={scrub.hintId} className="sr-only">
+              Arrow keys pick a minute; Enter shows its Top Apps.
+            </p>
+            {pin && (
+              <MinutePanel
+                machineId={machine.id}
+                pin={pin}
+                now={now}
+                latest={pin.minute.t === machine.history.at(-1)?.t}
+                ramTotal={usage.ram.total}
+                onClose={() => setPin(null)}
+              />
+            )}
           </div>
 
           {usage.disks.length > 1 && <DriveList disks={usage.disks} muted={!online} />}
@@ -125,19 +166,11 @@ export function MachineSheet({
               {usage.services?.t3 !== undefined && (
                 <ServiceRow name="T3 service" running={usage.services.t3} muted={!online} />
               )}
-              <VpnList
-                machine={machine}
-                muted={!online}
-                locked={
-                  !online
-                    ? `${machine.name} is Offline.`
-                    : heardAt !== null
-                      ? "The Dashboard can’t reach the server."
-                      : null
-                }
-              />
+              <VpnList machine={machine} muted={!online} locked={locked} />
             </div>
           )}
+
+          <AppsSection machine={machine} muted={!online} locked={locked} />
         </div>
       ) : (
         <NoUsage />
@@ -157,6 +190,7 @@ function ChannelRow({
   now,
   lifted,
   showTimes = false,
+  scrub,
 }: {
   channel: Channel
   label: string
@@ -169,6 +203,7 @@ function ChannelRow({
   now: number
   lifted: boolean
   showTimes?: boolean
+  scrub: Scrub
 }) {
   return (
     <div className="grid grid-cols-[6.75rem_minmax(0,1fr)] items-start gap-x-4 sm:grid-cols-[8rem_minmax(0,1fr)]">
@@ -192,7 +227,21 @@ function ChannelRow({
         level={level}
         lifted={lifted}
         showTimes={showTimes}
-      />
+        hoverAt={scrub.hover?.minute.ms ?? null}
+        pinAt={scrub.pin?.minute.ms ?? null}
+      >
+        <Scrubber
+          channel={channel}
+          buckets={scrub.buckets}
+          now={now}
+          showTimes={showTimes}
+          hover={scrub.hover}
+          pin={scrub.pin}
+          hintId={scrub.hintId}
+          onHover={scrub.setHover}
+          onPin={scrub.setPin}
+        />
+      </Trace>
     </div>
   )
 }
@@ -202,11 +251,13 @@ function DiskChannel({
   points,
   now,
   lifted,
+  scrub,
 }: {
   disks: Disk[]
   points: TracePoint[]
   now: number
   lifted: boolean
+  scrub: Scrub
 }) {
   const fullest = fullestDisk(disks)
   const value = fullest ? percent(fullest.used, fullest.total) : 0
@@ -229,6 +280,7 @@ function DiskChannel({
       now={now}
       lifted={lifted}
       showTimes
+      scrub={scrub}
     />
   )
 }

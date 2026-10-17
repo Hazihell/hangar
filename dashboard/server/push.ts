@@ -1,0 +1,178 @@
+// Web Push (RFC 8030) with VAPID (RFC 8292) and aes128gcm payload encryption
+// (RFC 8291 + RFC 8188), on node:crypto only.
+import { createECDH, createCipheriv, createPrivateKey, hkdfSync, randomBytes, sign, generateKeyPairSync } from 'node:crypto';
+import type { KeyObject } from 'node:crypto';
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
+
+/**
+ * VAPID key pair as stored in vapid.json: both base64url.
+ * `publicKey` is the 65-byte uncompressed P-256 point (what `pushManager.subscribe` wants as
+ * `applicationServerKey`); `privateKey` is the raw 32-byte scalar d.
+ */
+export type VapidKeys = { publicKey: string; privateKey: string };
+export type Subscription = { endpoint: string; keys: { p256dh: string; auth: string } };
+export type SendResult = { ok: boolean; status: number; gone: boolean; error?: string };
+export type FetchLike = (url: string, init: { method: string; headers: Record<string, string>; body: Buffer; signal?: AbortSignal; redirect?: 'manual' }) => Promise<{ status: number; ok: boolean }>;
+
+/**
+ * VAPID `sub` claim. A real https URL: push services only require a mailto: or https: URL, but
+ * Apple's has been known to refuse mailto: addresses on non-public domains such as localhost.
+ */
+export const VAPID_SUBJECT = 'https://github.com/Hazihell/hangar';
+
+const b64 = (buffer: Uint8Array) => Buffer.from(buffer).toString('base64url');
+const unb64 = (text: string) => Buffer.from(text, 'base64url');
+
+function privateKeyOf(d: Buffer, point: Buffer): KeyObject {
+  return createPrivateKey({ key: { kty: 'EC', crv: 'P-256', d: b64(d), x: b64(point.subarray(1, 33)), y: b64(point.subarray(33, 65)) }, format: 'jwk' });
+}
+
+export function generateVapid(): VapidKeys {
+  const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+  const jwk = privateKey.export({ format: 'jwk' });
+  return { publicKey: b64(Buffer.concat([Buffer.from([4]), unb64(jwk.x!), unb64(jwk.y!)])), privateKey: jwk.d! };
+}
+
+/** Throws unless `x` is a key pair whose public point is the one its private scalar gives. */
+function checkVapid(x: any): asserts x is VapidKeys {
+  if (x === null || typeof x !== 'object' || typeof x.publicKey !== 'string' || typeof x.privateKey !== 'string') throw new Error('it needs "publicKey" and "privateKey"');
+  const point = unb64(x.publicKey), d = unb64(x.privateKey);
+  if (point.length !== 65 || point[0] !== 4) throw new Error('"publicKey" is not an uncompressed P-256 point');
+  if (d.length !== 32) throw new Error('"privateKey" is not a 32-byte scalar');
+  const ecdh = createECDH('prime256v1');
+  try { ecdh.setPrivateKey(d); } catch { throw new Error('"privateKey" is not a valid P-256 scalar'); }
+  if (!ecdh.getPublicKey().equals(point)) throw new Error('"publicKey" does not belong to "privateKey"');
+}
+
+/**
+ * Reads the VAPID key pair at `path` and makes sure it is mode 0600, or makes one (parent directory
+ * created) when there is no file. A file that is unreadable, malformed or has a mismatched pair
+ * throws: it is never replaced, because a new key would invalidate every subscription.
+ */
+export function loadOrCreateVapid(path: string): VapidKeys {
+  let raw: string | null = null;
+  try { raw = readFileSync(path, 'utf8'); } catch (error: any) { if (error?.code !== 'ENOENT') throw error; }
+  if (raw === null) {
+    const keys = generateVapid();
+    mkdirSync(dirname(path), { recursive: true });
+    try { writeFileSync(path, JSON.stringify(keys) + '\n', { mode: 0o600, flag: 'wx' }); } catch (error: any) {
+      if (error?.code === 'EEXIST') return loadOrCreateVapid(path); // another process was first
+      throw error;
+    }
+    chmodSync(path, 0o600);
+    return keys;
+  }
+  let keys: any;
+  try { keys = JSON.parse(raw); checkVapid(keys); } catch (error: any) { throw new Error(`${path} is not a usable VAPID key file: ${error?.message ?? error}`); }
+  chmodSync(path, 0o600);
+  return { publicKey: keys.publicKey, privateKey: keys.privateKey };
+}
+
+/** `Authorization` header value for a push to `endpoint`. `now` is in milliseconds. */
+export function vapidHeader(endpoint: string, keys: VapidKeys, subject: string, now: number): string {
+  // The JWT may live 24 h at most; 12 h is plenty and leaves room for clock skew.
+  const claims = { aud: new URL(endpoint).origin, exp: Math.floor(now / 1000) + 12 * 3600 - 300, sub: subject };
+  const input = `${b64(Buffer.from(JSON.stringify({ typ: 'JWT', alg: 'ES256' })))}.${b64(Buffer.from(JSON.stringify(claims)))}`;
+  const key = privateKeyOf(unb64(keys.privateKey), unb64(keys.publicKey));
+  const signature = sign('sha256', Buffer.from(input), { key, dsaEncoding: 'ieee-p1363' });
+  return `vapid t=${input}.${b64(signature)}, k=${keys.publicKey}`;
+}
+
+export type EncryptOptions = {
+  /** 16 random bytes by default. Injectable for tests. */
+  salt?: Buffer;
+  /** The sender's one-time key pair (raw d and 65-byte point); generated by default. Injectable for tests. */
+  ephemeral?: { privateKey: Buffer; publicKey: Buffer };
+};
+
+const RECORD_SIZE = 4096;
+
+/** Encrypts `payload` for `subscription` as one aes128gcm record (RFC 8291). Returns the request body. */
+export function encrypt(payload: Buffer, subscription: { keys: { p256dh: string; auth: string } }, opts: EncryptOptions = {}): Buffer {
+  const uaPublic = unb64(subscription.keys.p256dh);
+  const authSecret = unb64(subscription.keys.auth);
+  const salt = opts.salt ?? randomBytes(16);
+  const ecdh = createECDH('prime256v1');
+  if (opts.ephemeral) ecdh.setPrivateKey(opts.ephemeral.privateKey);
+  else ecdh.generateKeys();
+  const asPublic = opts.ephemeral?.publicKey ?? ecdh.getPublicKey();
+  if (salt.length !== 16) throw new Error('salt must be 16 bytes');
+  // Header 86 bytes + 16 byte tag + 1 byte delimiter leaves room for this much.
+  if (payload.length > RECORD_SIZE - 86 - 16 - 1) throw new Error('payload too large');
+
+  const ecdhSecret = ecdh.computeSecret(uaPublic);
+  const keyInfo = Buffer.concat([Buffer.from('WebPush: info\0'), uaPublic, asPublic]);
+  const ikm = Buffer.from(hkdfSync('sha256', ecdhSecret, authSecret, keyInfo, 32));
+  const cek = Buffer.from(hkdfSync('sha256', ikm, salt, 'Content-Encoding: aes128gcm\0', 16));
+  const nonce = Buffer.from(hkdfSync('sha256', ikm, salt, 'Content-Encoding: nonce\0', 12));
+
+  const cipher = createCipheriv('aes-128-gcm', cek, nonce);
+  const ciphertext = Buffer.concat([cipher.update(Buffer.concat([payload, Buffer.from([2])])), cipher.final(), cipher.getAuthTag()]);
+  const header = Buffer.alloc(21);
+  salt.copy(header, 0);
+  header.writeUInt32BE(RECORD_SIZE, 16);
+  header[20] = asPublic.length;
+  return Buffer.concat([header, asPublic, ciphertext]);
+}
+
+export type SendOptions = {
+  vapid: VapidKeys;
+  subject?: string;
+  /** Seconds the push service keeps the message for an unreachable device. Default 86400. */
+  ttl?: number;
+  /** `high` for Alerts, `normal` for quiet ones. Default `high`. */
+  urgency?: 'high' | 'normal';
+  fetch?: FetchLike;
+  now?: number;
+};
+
+/** Pushes `payload` (as JSON) to one subscription. Never throws on network trouble. */
+export async function send(subscription: Subscription, payload: unknown, opts: SendOptions): Promise<SendResult> {
+  try {
+    if (!allowedEndpoint(subscription.endpoint)) return { ok: false, status: 0, gone: false, error: 'endpoint is not a known push service' };
+    const body = encrypt(Buffer.from(JSON.stringify(payload)), subscription);
+    const headers = {
+      'Content-Encoding': 'aes128gcm',
+      'Content-Type': 'application/octet-stream',
+      TTL: String(opts.ttl ?? 86400),
+      Urgency: opts.urgency ?? 'high',
+      Authorization: vapidHeader(subscription.endpoint, opts.vapid, opts.subject ?? VAPID_SUBJECT, opts.now ?? Date.now()),
+    };
+    const doFetch: FetchLike = opts.fetch ?? fetch;
+    const response = await doFetch(subscription.endpoint, { method: 'POST', headers, body, signal: AbortSignal.timeout(10_000), redirect: 'manual' });
+    // Redirects are not followed (they could lead anywhere): a 3xx is a failure.
+    const redirected = response.status >= 300 && response.status < 400;
+    return { ok: response.status >= 200 && response.status < 300, status: response.status, gone: response.status === 404 || response.status === 410, ...(redirected ? { error: 'redirects are not followed' } : {}) };
+  } catch (error: any) {
+    return { ok: false, status: 0, gone: false, error: String(error?.message ?? error) };
+  }
+}
+
+const PUSH_HOSTS = ['fcm.googleapis.com', 'android.googleapis.com', 'updates.push.services.mozilla.com', 'web.push.apple.com'];
+const PUSH_DOMAINS = ['.push.services.mozilla.com', '.push.apple.com', '.notify.windows.com'];
+
+/**
+ * Whether `endpoint` is an https URL at a known push service (FCM, Mozilla autopush, Apple, Windows
+ * notifications) on port 443 with no credentials. The server POSTs to whatever a subscriber names, so
+ * anything else, such as an internal host, is refused.
+ */
+export function allowedEndpoint(endpoint: unknown): boolean {
+  if (typeof endpoint !== 'string' || endpoint.length > 2048) return false;
+  let url: URL;
+  try { url = new URL(endpoint); } catch { return false; }
+  if (url.protocol !== 'https:' || url.username !== '' || url.password !== '' || (url.port !== '' && url.port !== '443')) return false;
+  return PUSH_HOSTS.includes(url.hostname) || PUSH_DOMAINS.some(domain => url.hostname.endsWith(domain) && url.hostname.length > domain.length);
+}
+
+/** Whether `x` is a usable PushSubscription as the browser's `toJSON()` gives it. */
+export function validSubscription(x: unknown): x is Subscription {
+  if (x === null || typeof x !== 'object') return false;
+  const { endpoint, keys } = x as any;
+  if (!allowedEndpoint(endpoint)) return false;
+  if (keys === null || typeof keys !== 'object' || typeof keys.p256dh !== 'string' || typeof keys.auth !== 'string') return false;
+  const point = unb64(keys.p256dh);
+  if (point.length !== 65 || point[0] !== 4 || unb64(keys.auth).length !== 16) return false;
+  try { const ecdh = createECDH('prime256v1'); ecdh.generateKeys(); ecdh.computeSecret(point); } catch { return false; } // not a point on the curve
+  return true;
+}

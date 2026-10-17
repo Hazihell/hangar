@@ -1,21 +1,61 @@
 #!/usr/bin/env node
-// Dev stand-in for dashboard/server: GET /api/machines, GET /api/events and
-// POST /api/machines/:id/vpns/:name per dashboard/API.md, with fake Usage and
-// VPNs. No dependencies.
+// Dev stand-in for dashboard/server per dashboard/API.md, with fake Usage,
+// VPNs, Apps and Alerts. Serves GET /api/machines, GET /api/events,
+// POST /api/machines/:id/vpns/:name, GET /api/machines/:id/minutes/:t,
+// POST /api/machines/:id/quit and the /api/alerts/* endpoints. No dependencies.
 //
 //   node scripts/mock-server.mjs [port] [--extra] [--calm]
 //
 // Port: argv, else MOCK_PORT, else HANGAR_DASHBOARD_PORT, else 4398.
 // --extra (or MOCK_EXTRA=1) adds two Machines that exercise edge states:
-// one that never reported and one with many drives.
+// one that never reported and one with many drives. Both have `apps: null`
+// (the page hides the Apps section).
 // --calm (or MOCK_CALM=1) is the all-is-well case: both Machines Online, no
 // drive nearly full.
 //
 // VPN commands take MOCK_VPN_MS (default 4 s); connecting "Office" always fails,
 // so the error state can be seen. The MacBook is Offline unless --calm, so its
 // VPNs only take commands with --calm.
+//
+// Apps: each Machine keeps a flat list of fake Processes and builds the App
+// tree (incl. the PC's nested WSL App) on every view, so `apps` rides on
+// GET /api/machines and on every `machine` event. Processes jitter on each
+// report (MOCK_REPORT_MS, default 10 s); an Offline Machine keeps its last
+// ones. The startup log lists some demo pids.
+//
+// Minutes: GET /api/machines/:id/minutes/:t answers after ~250 ms (so the
+// loading state shows). The Top Apps are generated from the minute itself, so
+// they are the same on every request, and follow the minute's History cpu: a
+// spike is mostly WSL node and/or WSL claude (or Chrome / chrome-headless-shell)
+// on the PC and Codex or Google Chrome on the Mac. Works for the Offline Mac too.
+//
+// Quit: POST /api/machines/:id/quit answers `gone` for an unknown pid, `changed`
+// for a different `started`, `protected` for protected or not-own Processes, and
+// otherwise `sent`; a sent Process leaves the model ~1.5 s later (the next
+// report or GET no longer lists it). Demo cases:
+//   - Stormtrooper WSL `node` pid 5121 (started "1234567", the biggest node)
+//     ignores a plain quit: answers `sent` but stays forever. With force: true it
+//     is `sent` and goes.
+//   - Stormtrooper Windows `Code.exe` pid 14608 answers `failed` ("...can only be
+//     terminated forcefully (with /F option).") without force; with force, `sent`.
+//   - `{ "app": "Discord", "where"?: "wsl", "force": false }` quits an App by
+//     name: every Process of it that may be quit (results carry started/where).
+//   - The Mac needs --calm (Online), else 409. The mock never sends events for
+//     removals by itself; the next report does.
+//
+// Like the real server, every mutating request (not /api/report) must look
+// same-origin: a Host of 127.0.0.1/localhost on this port, an Origin (if any)
+// for that host, and Sec-Fetch-Site (if any) same-origin or none; else 403.
+// Vite's dev proxy rewrites Host and Origin to match (vite.config.ts).
+//
+// Alerts: GET /api/alerts/key returns a real P-256 public key (base64url,
+// uncompressed point) made at startup, usable with pushManager.subscribe.
+// Subscriptions live in memory; /api/alerts/test sends nothing. With
+// MOCK_ALERTS_TEST=502 it answers 502 "push service answered 403" (after the
+// 404 check) so the page's error path can be seen.
 
 import { createServer } from "node:http"
+import { generateKeyPairSync } from "node:crypto"
 
 const args = process.argv.slice(2)
 const port = Number(
@@ -55,6 +95,234 @@ function cpuAt(ms, rand, base, busy) {
   const day = Math.max(0, Math.sin(((hour - 7) / 16) * Math.PI))
   const burst = rand() < 0.08 * day ? 25 + rand() * 45 : 0
   return clamp(base + busy * day + burst + (rand() - 0.5) * 6, 0.5, 100)
+}
+
+const hash = (s) => {
+  let h = 2166136261
+  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619)
+  return h >>> 0
+}
+const sum = (xs) => xs.reduce((a, b) => a + b, 0)
+const MB = 1024 ** 2
+
+// --- Processes and Apps ---------------------------------------------------
+// A spec makes `n` Processes of one App: `share` is the App's fraction of the
+// Machine's CPU, `ram` its total bytes. pid_i = pid0 + i * step. `over` tweaks
+// single Processes by index.
+const PC_SPECS = [
+  { app: "chrome", name: "chrome.exe", n: 14, share: 0.07, ram: 2.5 * GB, pid0: 9200 },
+  { app: "Code", name: "Code.exe", n: 8, share: 0.06, ram: 1.3 * GB, pid0: 14600, over: { 2: { needsForce: true } } },
+  { app: "WindowsTerminal", name: "WindowsTerminal.exe", n: 1, share: 0.01, ram: 95 * MB, pid0: 7320 },
+  { app: "Discord", name: "Discord.exe", n: 5, share: 0.02, ram: 0.7 * GB, pid0: 11040 },
+  { app: "Spotify", name: "Spotify.exe", n: 4, share: 0.01, ram: 0.45 * GB, pid0: 12880 },
+  { app: "explorer", name: "explorer.exe", n: 1, share: 0.005, ram: 150 * MB, pid0: 5812, protected: true },
+  { app: "dwm", name: "dwm.exe", n: 1, share: 0.01, ram: 110 * MB, pid0: 1296, protected: true },
+  { app: "MsMpEng", name: "MsMpEng.exe", n: 1, share: 0.02, ram: 250 * MB, pid0: 3104, own: false },
+  { app: "svchost", name: "svchost.exe", n: 40, share: 0.04, ram: 0.55 * GB, pid0: 1000, step: 28, own: false },
+  { app: "OneDrive", name: "OneDrive.exe", n: 1, share: 0.003, ram: 140 * MB, pid0: 6644 },
+  // Inside WSL.
+  {
+    app: "node", name: "node", n: 9, share: 0.45, ram: 0.9 * GB, pid0: 5300, step: 19, wsl: true,
+    over: {
+      0: { pid: 5121, started: "1234567", ram: 483_000_000, w: 3, ignores: true },
+      1: { pid: 4802, ram: 130 * MB, w: 0.1, protected: true }, // the T3 server's main process
+    },
+  },
+  { app: "claude", name: "claude", n: 2, share: 0.12, ram: 0.55 * GB, pid0: 5601, step: 41, wsl: true },
+  { app: "codex", name: "codex", n: 1, share: 0.04, ram: 0.2 * GB, pid0: 5890, wsl: true },
+  { app: "chrome-headless-shell", name: "chrome-headless-shell", n: 4, share: 0.06, ram: 0.6 * GB, pid0: 6310, step: 9, wsl: true },
+  { app: "bash", name: "bash", n: 6, share: 0.01, ram: 40 * MB, pid0: 5004, step: 37, wsl: true },
+  { app: "python3", name: "python3", n: 1, share: 0.01, ram: 60 * MB, pid0: 6020, wsl: true },
+  { app: "sshd", name: "sshd", n: 1, share: 0.001, ram: 8 * MB, pid0: 705, wsl: true, protected: true },
+  { app: "systemd", name: "systemd", n: 1, share: 0.002, ram: 18 * MB, pid0: 1, wsl: true, protected: true },
+  { app: "tailscaled", name: "tailscaled", n: 1, share: 0.005, ram: 70 * MB, pid0: 612, wsl: true, protected: true },
+]
+const PC_SPIKERS = [
+  { name: "node", where: "wsl", weight: 5 },
+  { name: "claude", where: "wsl", weight: 3 },
+  { name: "chrome-headless-shell", where: "wsl", weight: 1.5 },
+  { name: "chrome", weight: 1.5 },
+]
+
+const MAC_SPECS = [
+  { app: "Codex", names: ["Codex", "Codex Helper (Renderer)", "Codex Helper (GPU)"], n: 3, share: 0.3, ram: 1.6 * GB, pid0: 8211, step: 3 },
+  { app: "Slack", names: ["Slack", "Slack Helper (Renderer)", "Slack Helper (GPU)", "Slack Helper"], n: 4, share: 0.05, ram: 1.0 * GB, pid0: 7120, step: 5 },
+  {
+    app: "Google Chrome",
+    names: ["Google Chrome", "Google Chrome Helper (GPU)", "Google Chrome Helper (Renderer)"],
+    n: 12, share: 0.25, ram: 2.2 * GB, pid0: 9012, step: 17,
+  },
+  { app: "T3 Code", names: ["T3 Code", "T3 Code Helper (Renderer)", "T3 Code Helper (GPU)"], n: 3, share: 0.06, ram: 0.9 * GB, pid0: 7650, step: 4 },
+  { app: "WindowServer", name: "WindowServer", n: 1, share: 0.06, ram: 350 * MB, pid0: 412, protected: true, own: false },
+  { app: "Finder", name: "Finder", n: 1, share: 0.002, ram: 140 * MB, pid0: 640, protected: true },
+  { app: "Dock", name: "Dock", n: 1, share: 0.005, ram: 60 * MB, pid0: 598, protected: true },
+  { app: "Tailscale", name: "Tailscale", n: 1, share: 0.003, ram: 90 * MB, pid0: 702, protected: true },
+  { app: "kernel_task", name: "kernel_task", n: 1, share: 0.08, ram: 300 * MB, pid0: 0, own: false },
+  { app: "mds_stores", name: "mds_stores", n: 1, share: 0.04, ram: 220 * MB, pid0: 338, own: false },
+  { app: "Terminal", name: "Terminal", n: 1, share: 0.01, ram: 120 * MB, pid0: 9930 },
+  { app: "node", name: "node", n: 3, share: 0.08, ram: 0.6 * GB, pid0: 10240, step: 33 },
+]
+const MAC_SPIKERS = [
+  { name: "Codex", weight: 3 },
+  { name: "Google Chrome", weight: 2 },
+]
+
+const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+// An opaque start token, shaped like the real one for each platform.
+function startedToken(space, pid) {
+  if (space === "windows") return String(133_900_000_000_000_000n + BigInt(pid) * 90_000_000_000n)
+  if (space === "wsl") return String(4_000 + pid * 131)
+  const d = new Date(Date.UTC(2026, 9, 1, 6, 0, 0) + pid * 71_000)
+  const p2 = (n) => String(n).padStart(2, "0")
+  return `${DAYS[d.getUTCDay()]} ${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()} ${p2(d.getUTCHours())}:${p2(d.getUTCMinutes())}:${p2(d.getUTCSeconds())} ${d.getUTCFullYear()}`
+}
+
+function buildProcs(specs, os, rand) {
+  const procs = []
+  const used = new Set()
+  for (const s of specs) {
+    const ws = [], rs = []
+    for (let i = 0; i < s.n; i++) {
+      const o = s.over?.[i]
+      ws.push(o?.w ?? (i === 0 ? 1 : 0.05 + rand() * 0.5))
+      rs.push(0.3 + rand())
+    }
+    const wSum = sum(ws)
+    const fixed = sum(Array.from({ length: s.n }, (_, i) => s.over?.[i]?.ram ?? 0))
+    const freeSum = sum(rs.filter((_, i) => s.over?.[i]?.ram === undefined))
+    for (let i = 0; i < s.n; i++) {
+      const o = s.over?.[i] ?? {}
+      const pid = o.pid ?? s.pid0 + i * (s.step ?? 4)
+      const key = `${s.wsl ? "wsl" : "host"}:${pid}`
+      if (used.has(key)) throw new Error(`duplicate pid ${key}`)
+      used.add(key)
+      const space = s.wsl ? "wsl" : os
+      const ram = o.ram ?? Math.round(((s.ram - fixed) * rs[i]) / freeSum)
+      procs.push({
+        pid,
+        name: o.name ?? (s.names ? s.names[Math.min(i, s.names.length - 1)] : s.name),
+        app: s.app,
+        share: (s.share * ws[i]) / wSum,
+        cpu: 0,
+        ramBase: ram,
+        ram,
+        started: o.started ?? startedToken(space, pid),
+        own: s.own ?? true,
+        protected: o.protected ?? (s.protected === true),
+        ...(s.wsl ? { where: "wsl" } : {}),
+        ...(o.needsForce ? { needsForce: true } : {}),
+        ...(o.ignores ? { ignores: true } : {}),
+      })
+    }
+  }
+  return procs
+}
+
+// Gives a Machine its Processes: m.procs stays the source of truth.
+function attachApps(m, specs, spikers, seed) {
+  m.specs = specs
+  m.spikers = spikers
+  m.prand = noise(seed)
+  m.procs = buildProcs(specs, m.os, m.prand)
+  m.vmmemRam = specs.some((s) => s.wsl) ? 7 * GB : 0
+  refreshProcs(m, m.usage.cpu, m.lastSeenMs)
+}
+
+// A report's worth of jitter: each Process takes its share of the Machine's CPU.
+function refreshProcs(m, cpu, at) {
+  for (const p of m.procs) {
+    p.cpu = round1(cpu * p.share * (0.75 + 0.5 * m.prand()))
+    p.ram = Math.round(p.ramBase * (0.97 + 0.06 * m.prand()))
+  }
+  if (m.vmmemRam) m.vmmemRam = Math.round(7 * GB * (0.99 + 0.02 * m.prand()))
+  m.appsAtMs = at
+}
+
+const canQuit = (p) => p.own && !p.protected
+
+function groupApps(procs) {
+  const by = new Map()
+  for (const p of procs) {
+    if (!by.has(p.app)) by.set(p.app, [])
+    by.get(p.app).push(p)
+  }
+  return [...by].map(([name, ps]) => ({
+    name,
+    cpu: round1(sum(ps.map((p) => p.cpu))),
+    ram: sum(ps.map((p) => p.ram)),
+    count: ps.length,
+    quit: ps.some(canQuit),
+    processes: [...ps]
+      .sort((a, b) => b.cpu - a.cpu)
+      .slice(0, 20)
+      .map((p) => ({ pid: p.pid, name: p.name, cpu: p.cpu, ram: p.ram, started: p.started, quit: canQuit(p) })),
+  }))
+}
+
+// The 10 Apps using the most CPU and the 10 using the most RAM, by CPU.
+function topUnion(apps) {
+  const byCpu = [...apps].sort((a, b) => b.cpu - a.cpu)
+  const byRam = [...apps].sort((a, b) => b.ram - a.ram)
+  const keep = new Set([...byCpu.slice(0, 10), ...byRam.slice(0, 10)])
+  return byCpu.filter((a) => keep.has(a))
+}
+
+function appsView(m) {
+  if (!m.procs) return null
+  const host = groupApps(m.procs.filter((p) => !p.where))
+  const inner = groupApps(m.procs.filter((p) => p.where === "wsl"))
+  if (inner.length) {
+    host.push({
+      name: "WSL",
+      cpu: round1(sum(inner.map((a) => a.cpu)) * 1.05),
+      ram: m.vmmemRam,
+      count: sum(inner.map((a) => a.count)),
+      quit: false,
+      processes: [],
+      apps: topUnion(inner),
+    })
+  }
+  return { at: iso(m.appsAtMs), list: topUnion(host) }
+}
+
+// The Top Apps of one History minute, made from the minute alone so repeated
+// requests agree, and following the minute's cpu: a spike is mostly one or two Apps.
+function minuteApps(m, point) {
+  const rand = noise(hash(`${m.id}|${point.t}`))
+  const roster = m.specs.map((s) => ({ name: s.app, where: s.wsl ? "wsl" : undefined, share: s.share, ram: s.ram }))
+  const ws = roster.map((r) => r.share * (0.5 + rand()))
+  const boost = clamp((point.cpu - 12) / 40, 0, 1)
+  const dominant = new Set()
+  const pick = (exclude) => {
+    const pool = m.spikers.filter((s) => !exclude.has(s))
+    let x = rand() * sum(pool.map((s) => s.weight))
+    for (const s of pool) if ((x -= s.weight) < 0) return s
+    return pool[0]
+  }
+  const first = pick(new Set())
+  dominant.add(first)
+  if (rand() < 0.4) dominant.add(pick(dominant))
+  const base = sum(ws)
+  roster.forEach((r, i) => {
+    if ([...dominant].some((d) => d.name === r.name && d.where === r.where)) ws[i] += (base * boost * 9) / dominant.size
+  })
+  const total = sum(ws)
+  const out = roster.map((r, i) => {
+    const hot = [...dominant].some((d) => d.name === r.name && d.where === r.where)
+    const ramRand = noise(hash(`${r.name}|${r.where}|${Math.floor(Date.parse(point.t) / (15 * MINUTE))}`))()
+    return {
+      name: r.name,
+      ...(r.where ? { where: r.where } : {}),
+      cpu: round1((point.cpu * ws[i]) / total * (0.97 + 0.06 * rand())),
+      ram: Math.round(r.ram * (0.92 + 0.16 * ramRand) * (hot ? 1 + 0.6 * boost : 1)),
+    }
+  })
+  const keep = new Set([
+    ...[...out].sort((a, b) => b.cpu - a.cpu).slice(0, 5),
+    ...[...out].sort((a, b) => b.ram - a.ram).slice(0, 5),
+  ])
+  return out.filter((a) => keep.has(a)).sort((a, b) => b.cpu - a.cpu)
 }
 
 function makeMachines(now) {
@@ -97,6 +365,7 @@ function makeMachines(now) {
       history,
       live: true,
     })
+    attachApps(machines.at(-1), PC_SPECS, PC_SPIKERS, 101)
   }
 
   // MacBook Air: Offline, last seen ~2 h ago.
@@ -130,6 +399,7 @@ function makeMachines(now) {
       ramPct: last.ram,
       live: calm,
     })
+    attachApps(machines.at(-1), MAC_SPECS, MAC_SPIKERS, 202)
   }
 
   if (extra) {
@@ -189,6 +459,7 @@ function view(m, now) {
     lastSeen: m.lastSeenMs === null ? null : iso(m.lastSeenMs),
     usage: m.usage,
     vpns: m.vpns.map((v) => ({ ...v })),
+    apps: appsView(m),
   }
 }
 
@@ -204,6 +475,7 @@ function report(m, now) {
     ram: { used: Math.round((m.ramPct / 100) * ramTotal), total: ramTotal },
   }
   m.lastSeenMs = now
+  if (m.procs) refreshProcs(m, cpu, now)
 
   const t = iso(minuteStart(now))
   const fullest = Math.max(...m.usage.disks.map((d) => (d.used / d.total) * 100))
@@ -219,6 +491,78 @@ function report(m, now) {
   while (m.history.length && Date.parse(m.history[0].t) < now - DAY) m.history.shift()
   const { n: _n, ...minute } = m.history.at(-1)
   return { ...view(m, now), minute }
+}
+
+// --- Alerts ---------------------------------------------------------------
+// A real P-256 key, so the browser accepts it as applicationServerKey.
+const vapid = generateKeyPairSync("ec", { namedCurve: "prime256v1" })
+const vapidJwk = vapid.publicKey.export({ format: "jwk" })
+const alertsKey = Buffer.concat([
+  Buffer.from([4]),
+  Buffer.from(vapidJwk.x, "base64url"),
+  Buffer.from(vapidJwk.y, "base64url"),
+]).toString("base64url")
+const subscriptions = new Map()
+
+const JSON_TYPE = /^application\/(?:[\w.+-]+\+)?json(?:\s*;|$)/i
+
+function send(res, status, text = "", type = "text/plain") {
+  res.writeHead(status, { "content-type": type, "cache-control": "no-store" })
+  res.end(text)
+}
+const sendJson = (res, status, body) => send(res, status, JSON.stringify(body), "application/json")
+
+// Reads a JSON body; answers 400 itself when it is malformed (or, with
+// requireJson, when the Content-Type isn't JSON, as a CSRF guard).
+function readJson(req, res, requireJson, handler) {
+  if (requireJson && !JSON_TYPE.test(req.headers["content-type"] ?? "")) {
+    send(res, 400)
+    req.resume()
+    return
+  }
+  let raw = ""
+  req.on("data", (chunk) => (raw += chunk))
+  req.on("end", () => {
+    let body
+    try {
+      body = JSON.parse(raw)
+    } catch {
+      return send(res, 400)
+    }
+    handler(body)
+  })
+}
+
+const isObject = (x) => typeof x === "object" && x !== null && !Array.isArray(x)
+
+// POST /api/machines/:id/quit
+const GONE_AFTER_MS = 1_500
+function quit(m, targets, force) {
+  const removed = new Set()
+  // Every result names the Process it was checked against, in target order.
+  const results = targets.map((t) => {
+    const id = { pid: t.pid, started: t.started, ...(t.where ? { where: t.where } : {}) }
+    const p = m.procs.find((x) => x.pid === t.pid && x.where === t.where)
+    if (!p) return { ...id, result: "gone" }
+    if (p.started !== t.started) return { ...id, result: "changed" }
+    if (!canQuit(p)) return { ...id, result: "protected" }
+    if (p.needsForce && !force) {
+      return {
+        ...id,
+        result: "failed",
+        message: `ERROR: The process with PID ${p.pid} could not be terminated. Reason: This process can only be terminated forcefully (with /F option).`,
+      }
+    }
+    if (!(p.ignores && !force)) removed.add(p)
+    return { ...id, result: "sent" }
+  })
+  setTimeout(() => {
+    m.procs = m.procs.filter((p) => !removed.has(p))
+  }, GONE_AFTER_MS)
+  console.log(
+    `quit ${m.id}: ${targets.map((t) => `${t.where === "wsl" ? "wsl:" : ""}${t.pid}`).join(",")}${force ? " (force)" : ""} -> ${results.map((r) => r.result).join(",")}`
+  )
+  return results
 }
 
 const clients = new Set()
@@ -259,8 +603,30 @@ setInterval(() => {
   for (const m of machines) if (m.live) broadcast(report(m, now))
 }, Number(process.env.MOCK_REPORT_MS ?? REPORT_EVERY))
 
+// The real server's same-origin guard for mutating requests.
+function crossOrigin(req) {
+  const host = req.headers.host ?? ""
+  if (host !== `127.0.0.1:${port}` && host !== `localhost:${port}`) return true
+  const origin = req.headers.origin
+  if (origin !== undefined) {
+    try {
+      if (new URL(origin).host !== host) return true
+    } catch {
+      return true
+    }
+  }
+  const site = req.headers["sec-fetch-site"]
+  return site !== undefined && site !== "same-origin" && site !== "none"
+}
+
 const server = createServer((req, res) => {
   const url = new URL(req.url ?? "/", "http://localhost")
+
+  if (req.method !== "GET" && url.pathname !== "/api/report" && crossOrigin(req)) {
+    res.writeHead(403, { "content-type": "text/plain" }).end("Not from the Dashboard's origin.\n")
+    req.resume()
+    return
+  }
 
   if (req.method === "GET" && url.pathname === "/api/machines") {
     const now = Date.now()
@@ -308,6 +674,106 @@ const server = createServer((req, res) => {
     return
   }
 
+  const minutePath = url.pathname.match(/^\/api\/machines\/([^/]+)\/minutes\/([^/]+)$/)
+  if (req.method === "GET" && minutePath) {
+    let id, t
+    try {
+      id = decodeURIComponent(minutePath[1])
+      t = decodeURIComponent(minutePath[2])
+    } catch {
+      return send(res, 404)
+    }
+    const m = machines.find((x) => x.id === id)
+    const point = m?.history.find((p) => p.t === t)
+    if (!m?.specs || !point) return send(res, 404)
+    setTimeout(() => sendJson(res, 200, { t, apps: minuteApps(m, point) }), 250)
+    return
+  }
+
+  const quitPath = url.pathname.match(/^\/api\/machines\/([^/]+)\/quit$/)
+  if (req.method === "POST" && quitPath) {
+    readJson(req, res, true, (body) => {
+      const { targets: given, app, where, force } = isObject(body) ? body : {}
+      const m0 = machines.find((x) => x.id === decodeURIComponent(quitPath[1]))
+      if (typeof app === "string" && given === undefined) {
+        // An App by name: all of its Processes that may be quit.
+        if ((where !== undefined && where !== "wsl") || typeof force !== "boolean") return send(res, 400)
+        if (!m0?.procs) return send(res, 404)
+        if (!isOnline(m0, Date.now())) return send(res, 409)
+        const procs = m0.procs.filter((p) => p.app === app && p.where === where && canQuit(p))
+        const targets = procs.map((p) => ({ pid: p.pid, started: p.started, ...(p.where ? { where: p.where } : {}) }))
+        const results = quit(m0, targets, force)
+        return sendJson(res, 200, { results })
+      }
+      const targets = given
+      const valid =
+        Array.isArray(targets) &&
+        targets.length >= 1 &&
+        targets.length <= 200 &&
+        targets.every(
+          (t) =>
+            isObject(t) &&
+            Number.isInteger(t.pid) &&
+            typeof t.started === "string" &&
+            (t.where === undefined || t.where === "wsl")
+        ) &&
+        (force === undefined || typeof force === "boolean")
+      if (!valid) return send(res, 400)
+      const m = machines.find((x) => x.id === decodeURIComponent(quitPath[1]))
+      if (!m?.procs) return send(res, 404)
+      if (!isOnline(m, Date.now())) return send(res, 409)
+      sendJson(res, 200, { results: quit(m, targets, force === true) })
+    })
+    return
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/alerts/key") {
+    return sendJson(res, 200, { publicKey: alertsKey })
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/alerts/subscriptions") {
+    readJson(req, res, true, (body) => {
+      const { endpoint, keys } = isObject(body) ? body : {}
+      const ok =
+        typeof endpoint === "string" &&
+        endpoint.startsWith("https:") &&
+        isObject(keys) &&
+        typeof keys.p256dh === "string" &&
+        keys.p256dh !== "" &&
+        typeof keys.auth === "string" &&
+        keys.auth !== ""
+      if (!ok) return send(res, 400)
+      subscriptions.set(endpoint, { endpoint, keys: { p256dh: keys.p256dh, auth: keys.auth } })
+      console.log(`alerts: subscribed ${endpoint.slice(0, 60)} (${subscriptions.size} total)`)
+      send(res, 201)
+    })
+    return
+  }
+
+  if (req.method === "DELETE" && url.pathname === "/api/alerts/subscriptions") {
+    readJson(req, res, false, (body) => {
+      const endpoint = isObject(body) ? body.endpoint : undefined
+      const had = typeof endpoint === "string" && subscriptions.delete(endpoint)
+      console.log(`alerts: unsubscribed ${had ? "" : "(was not subscribed) "}${String(endpoint).slice(0, 60)}`)
+      send(res, 204)
+    })
+    return
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/alerts/test") {
+    readJson(req, res, false, (body) => {
+      const endpoint = isObject(body) ? body.endpoint : undefined
+      if (typeof endpoint !== "string" || !subscriptions.has(endpoint)) return send(res, 404)
+      if (process.env.MOCK_ALERTS_TEST === "502") {
+        console.log(`alerts: test for ${endpoint.slice(0, 60)} -> 502`)
+        return send(res, 502, "push service answered 403")
+      }
+      console.log(`alerts: test for ${endpoint.slice(0, 60)} -> 204`)
+      send(res, 204)
+    })
+    return
+  }
+
   if (req.method === "GET" && url.pathname === "/api/events") {
     res.writeHead(200, {
       "content-type": "text/event-stream",
@@ -330,4 +796,11 @@ const server = createServer((req, res) => {
 
 server.listen(port, "127.0.0.1", () => {
   console.log(`mock dashboard server on http://127.0.0.1:${port}${extra ? " (with --extra Machines)" : ""}`)
+  for (const m of machines) {
+    if (!m.procs) continue
+    const pick = (app, where) => m.procs.filter((p) => p.app === app && p.where === where && canQuit(p)).slice(0, 2).map((p) => p.pid)
+    const names = m.os === "windows" ? [["Discord"], ["Spotify"], ["chrome"], ["claude", "wsl"], ["bash", "wsl"]] : [["Slack"], ["Terminal"], ["node"], ["Google Chrome"]]
+    console.log(`  ${m.id} quittable pids: ${names.map(([a, w]) => `${w ? "wsl " : ""}${a} ${pick(a, w).join("/")}`).join(", ")}`)
+  }
+  console.log("  demo: wsl node 5121 ignores a plain quit; Code.exe 14608 needs force")
 })

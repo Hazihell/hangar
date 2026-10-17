@@ -1,0 +1,6 @@
+ 101 501 200.0 4096 Fri Oct 16 09:05:01 2026 /Applications/Codex.app/Contents/Frameworks/Codex Helper.app/Contents/MacOS/Codex Helper (Renderer)
+ 102 0 20.0 8192 Fri Oct 16 09:05:02 2026 /usr/libexec/WindowServer
+ 103 501 0.0 1024 Fri Oct 16 09:05:03 2026 /usr/local/bin/node
+ 104 501 1.0 512 Fri Oct 16 09:05:04 2026 /bin/bash
+ 105 501 2.0 256 Fri Oct 16 09:05:05 2026 /usr/bin/awk
+ 106 501 0.0 128 Fri Oct 16 09:05:06 2026 /tmp/path with spaces/tool "quoted"\name.exe

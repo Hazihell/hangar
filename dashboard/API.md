@@ -4,6 +4,16 @@ The contract between the server (`dashboard/server`), the reporters, and the pag
 
 The server listens on `127.0.0.1:4318` (override with `HANGAR_DASHBOARD_PORT`). `tailscale serve` puts it at `https://stormtrooper-linux.taila332e5.ts.net`. In production the server also serves the built page from `dashboard/web/dist`; in development Vite proxies `/api` to it.
 
+## Request safety
+
+Every non-GET/HEAD request requires an allowed `Host`: `127.0.0.1:<server port>`, `localhost:<server port>` or this Machine's tailnet DNS name. Startup reads `tailscale status --json` → `Self.DNSName`, removing the trailing dot; if Tailscale is unavailable, local access still works. `HANGAR_DASHBOARD_HOSTS` adds comma- or whitespace-separated exact hosts (optionally including a port), for an explicit override or additional development host. No wildcards.
+
+Except for `POST /api/report`, a present `Origin` must be `https://<allowed host>`, or `http(s)://127.0.0.1:<allowed port>` / `http(s)://localhost:<allowed port>`. A present `Sec-Fetch-Site` must be `same-origin` or `none`. Violations return `403` before handling the endpoint, including VPN, Quit and Alerts mutations. Reports need the Host check too, but require neither browser header.
+
+Tailscale Serve's TCP HTTP proxy preserves the original Host (`r.Out.Host = r.In.Host` in [Tailscale v1.104.1](https://github.com/tailscale/tailscale/blob/v1.104.1/ipn/ipnlocal/serve.go#L927)), so the Mac reporter's HTTPS URL forwards `stormtrooper-linux.taila332e5.ts.net`, which startup discovers. Forwarded headers do not grant trust.
+
+Vite already uses `changeOrigin: true`, forwarding Host as `127.0.0.1:<server port>`. Browser Origin still names Vite's port: start the backend with `HANGAR_DASHBOARD_HOSTS=localhost:5173,127.0.0.1:5173` for the default local development URLs (adjust for the actual Vite port). No web configuration change is needed.
+
 ## Machines
 
 `dashboard/machines.json` lists every Machine. A report naming any other Machine is rejected.
@@ -43,6 +53,16 @@ The server listens on `127.0.0.1:4318` (override with `HANGAR_DASHBOARD_PORT`). 
 - `services`: optional. The PC reports `t3`, whether the T3 service is running.
 - `vpns`: optional. Every VPN the operating system manages, except Tailscale. Names contain 1–256 characters, no control characters or double quotes, and cannot start with `-` or `/`. `status` is `connected`, `disconnected`, `connecting` or `disconnecting`. `kind` is `ppp` for PPP-based VPNs (L2TP, PPTP) and `other` for the rest; the server picks the Mac's connect command by it. Omitted when collection fails (the server keeps the previous list); an empty array clears the list. The PC reads `Get-VpnConnection` (per-user and all-user); the Mac reads `scutil --nc list`.
 
+- `processes`: optional. The union of the 300 Processes using the most RAM and the 100 using the most CPU (or every Process when fewer), as `{ "pid", "name", "app", "cpu", "ram", "started", "own" }`:
+  - `name`: the executable's base name only (`node`, `Codex Helper (Renderer)`, `chrome.exe`), never its path or arguments.
+  - `app`: the App it belongs to. On the Mac, the outermost `X.app` in its executable path gives `X` (`Codex`); otherwise `app` is `name` without a trailing `.exe`.
+  - `cpu`: percent of the whole Machine, 0–100 (a Process using two of eight cores fully is 25), averaged since the previous report; the Mac uses `ps`’s decaying average.
+  - `ram`: bytes resident (working set on Windows, RSS elsewhere).
+  - `started`: an opaque token that changes if the PID is reused: Windows `StartTime` ticks, the Mac's `ps -o lstart`, `/proc/<pid>/stat` field 22 in WSL.
+  - `own`: whether it runs as the Machine's user (Windows: in the collector's session only when that session is greater than zero, since process owners need admin to read; Mac and WSL: same uid as the collector).
+  - The Windows collector's first internal line reports `collectorPid` and `logicalCpus` (`Environment.ProcessorCount`); WSL CPU percentages use that whole-Machine denominator too. The PC also sends `wsl`: the same list for the Processes inside WSL, which the server reads itself.
+  - Omitted when collection fails (the server keeps the previous list). The Mac also sends optional `reporterPid` (positive integer); it marks the reporter and its descendants `own: false` so they cannot be quit. The reporter identifies itself and descendants from actual process commands containing `/mac-reporter.sh`; a reported PID is only an extra hint at Quit time. Collectors strip control characters from names; the server drops invalid Process rows without rejecting otherwise valid Usage (list containers and the Usage core remain strictly validated). Processes whose Windows start token is inaccessible use `started: ""` and `own: false`.
+
 Responses: `204` accepted; `400` malformed; `404` Machine not in the list.
 
 ## `GET /api/machines`
@@ -72,6 +92,23 @@ Responses: `204` accepted; `400` malformed; `404` Machine not in the list.
           "error": null
         }
       ],
+      "apps": {
+        "at": "2026-10-16T09:30:05.000Z",
+        "list": [
+          {
+            "name": "WSL",
+            "cpu": 22.4,
+            "ram": 7481000000,
+            "count": 61,
+            "quit": false,
+            "processes": [],
+            "apps": [
+              { "name": "node", "cpu": 15.0, "ram": 912000000, "count": 9, "quit": true,
+                "processes": [{ "pid": 5121, "name": "node", "cpu": 12.1, "ram": 483000000, "started": "1234567", "quit": true }] }
+            ]
+          }
+        ]
+      },
       "history": [{ "t": "2026-10-16T09:29:00.000Z", "cpu": 6.8, "ram": 32.1, "disk": 60.0 }]
     }
   ]
@@ -80,6 +117,7 @@ Responses: `204` accepted; `400` malformed; `404` Machine not in the list.
 
 - `lastSeen` and `usage` are `null` for a Machine that has never reported.
 - `vpns`: the latest known VPNs, `[]` if none. A report omitting `vpns` keeps the previous list. `pending` is `{ "action": "connect" | "disconnect", "since": "<iso>" }` while a command is under way, else `null`. `error` is `{ "message": "...", "at": "<iso>" }` when the last command failed, else `null`.
+- `apps`: `null` until the Machine has sent Processes. `list` holds the union of the 10 Apps using the most CPU and the 10 using the most RAM, so the page can sort by either. Each App sums its Processes; `processes` lists them (up to 20, most CPU first). `quit` says whether the Dashboard may Quit it (see Quit below): for an App, whether any of its Processes may be. On the PC, one App is named `WSL`: its `ram` is the `vmmemWSL` Process's and its `cpu` the larger of that Process's and the sum of the Processes inside WSL (Windows doesn't let a user read `vmmemWSL`'s CPU time), its `quit` is always `false`, and instead of `processes` it carries `apps`, the Apps inside WSL built the same way. Kept in memory only.
 - `history`: oldest first, at most 1440 points. `t` is the start of the minute. `cpu`, `ram` and `disk` are percents; `disk` is the fullest disk's percent.
 
 ## `POST /api/machines/:id/vpns/:name`
@@ -101,8 +139,105 @@ How the command runs:
 
 The VPN's `pending` is set when the command starts and cleared when a report shows the VPN `connected` (for `connect`) or `disconnected` (for `disconnect`). The command failing (non-zero exit) or 90 s passing without that report clears `pending` and sets `error`. An `error` stays until the next command on that VPN, or until a report shows the VPN reached what was asked. Each of these changes sends a `machine` event. Pending commands and errors live in memory only; a server restart forgets them.
 
+## `GET /api/machines/:id/minutes/:t`
+
+The Top Apps of one History minute. `:t` is the minute's `t` from `history`, in ISO form.
+
+```json
+{ "t": "2026-10-16T09:29:00.000Z", "apps": [{ "name": "node", "where": "wsl", "cpu": 61.0, "ram": 912000000 }] }
+```
+
+- `apps`: the union of the 5 Apps using the most CPU and the 5 using the most RAM, each averaged over the Process samples in that minute (an App missing from a sample counts as 0; a report omitting both Process lists does not count as a sample; explicit empty lists do). `where` is `"wsl"` for Apps inside WSL, otherwise absent. Apps inside WSL are ranked alongside the PC's own Apps; the `WSL` App itself is left out, since its insides are listed.
+- Stored with History and deleted with it after 24 h. Each minute retains at most 30 Apps: the union of its 15 CPU leaders and 15 RAM leaders, using accumulated values. Full current-minute sums stay in memory so an App entering the leaders later keeps its earlier contributions; a restart resumes from the retained leaders. Existing minute records migrate with their prior History sample count, since earlier omissions cannot be recovered.
+
+Responses: `200`; `404` no such Machine or no History point at that minute.
+
+## `POST /api/machines/:id/quit`
+
+```json
+{ "targets": [{ "pid": 5121, "started": "1234567", "where": "wsl" }], "force": false }
+```
+
+Quits Processes once. To Quit a whole App, use the alternative body:
+
+```json
+{ "app": "Chrome", "force": false }
+```
+
+Or `{ "app": "node", "where": "wsl", "force": false }` for an App inside WSL. `app` and `targets` are mutually exclusive. The server resolves an exact App name to **all** its quittable Processes in the latest known list, with their current `started` tokens, including those beyond the 20-row display cap; it then applies the same per-target checks. No matches returns `200` with an empty `results` array. App resolution can exceed 200 targets; the explicit `targets` form is limited to 200.
+
+`where` is `"wsl"` for Processes inside WSL, otherwise absent. Between 1 and 200 targets; `force` is a required boolean. Requires a JSON `Content-Type`.
+
+A Process may be quit only when it is `own`, has a nonempty `started` token and is not protected. A target absent from the latest known Process list returns `gone`; omitted lists retain the previous list, while empty lists clear it. Protected, whatever its user:
+
+- **PC (Windows):** `vmmemWSL`, `vmmem`, `wsl`, `wslhost`, `wslservice`, `wslrelay`, `svchost`, `StartMenuExperienceHost`, `ShellExperienceHost`, `TextInputHost`, `SearchHost`, `explorer`, `dwm`, `csrss`, `winlogon`, `ctfmon`, `sihost`, `fontdrvhost`, `RuntimeBroker`, `tailscale-ipn`, `tailscaled`, and `powershell` Processes the server itself started.
+- **PC (WSL):** PID 1 and the init/`systemd` Processes, the Dashboard server and its ancestors, the main Process of `t3code.service` (looked up again at Quit time; its children, such as the agents, may be quit), `sshd`, `tailscaled`.
+- **Mac:** `WindowServer`, `loginwindow`, `Dock`, `Finder`, `SystemUIServer`, `launchd`, any name starting with `sshd` (including process titles such as `sshd-session: user@notty`), Tailscale (`app` `Tailscale` and `tailscaled`), the reporter and its descendants (verified on the Mac from `/mac-reporter.sh` in the PID or ancestor commands, independent of reported `reporterPid`) and every ancestor of the Quit script itself, including the SSH session the server is using.
+
+Before acting, the server checks on the Machine that each PID still has the same `started` token. Without `force`, it asks each Process to close: `taskkill /PID <pid>` on Windows (no `/F`), `SIGTERM` on the Mac and in WSL. With `force`: Windows calls `Kill()` on the verified Process handle; Mac and WSL use `SIGKILL`. Graceful Windows Quit rechecks StartTime immediately before `taskkill`; Windows requests are chunked to keep encoded commands below the Windows command-line limit. Windows Processes without a window may refuse the request; that comes back as `failed` with Windows' message.
+
+Responses: `200` with a result per target, in order; `400` malformed; `404` no such Machine, or no way to reach it; `409` the Machine is Offline; `503` the current T3 MainPID could not be verified for a request involving WSL (nothing is quit).
+
+```json
+{ "results": [{ "pid": 5121, "started": "1234567", "where": "wsl", "result": "sent" }] }
+```
+
+Each result carries the `pid`, `started` and `where` of the Process it is about, so the page can follow, and if needed Force quit, exactly that Process, also for Processes beyond an App's 20 listed rows.
+
+`result` is `sent` (the request was delivered; the Process may take a moment to close), `gone` (no such Process any more), `changed` (the PID now belongs to a different Process, so nothing was done), `protected` (not allowed, nothing was done), or `failed` with a `message`. The page then watches the Machine's next reports: a Process still listed 10 s after `sent` is offered Force quit.
+
+## Alerts
+
+`dashboard/alerts.json` holds the rules:
+
+```json
+{
+  "disk": { "at": 90, "clear": 85 },
+  "cpu": { "at": 90, "clear": 80, "for": 300 },
+  "ram": { "at": 90, "clear": 85, "for": 300 },
+  "offline": { "for": 120, "machines": ["stormtrooper"] },
+  "vpn": true,
+  "t3": true,
+  "cooldown": 1800
+}
+```
+
+- **Disk nearly full:** a disk's percent reaches `disk.at`. Clears below `disk.clear`. One Alert per disk.
+- **CPU high / RAM high:** every report for `for` seconds is at or above `at`; two reports more than 60 s apart (a restart, sleep or Offline between them) don't count as one run. Clears when a report falls below `clear`. The Alert names the Top Apps at that moment, up to three, Apps inside WSL named as such: "Stormtrooper CPU at 97 % for 5 min: WSL node 61 %, WSL claude 18 %, chrome 6 %".
+- **VPN dropped:** a VPN that was `connected` becomes `disconnected` (through `connecting` or `disconnecting` too) without the Dashboard having disconnected it. A Dashboard `disconnect` doesn't count, including the report that shows it done and clears `pending`. A VPN first seen `disconnected`, or one that disappears from the list, doesn't Alert. Clears when it is `connected` again.
+- **T3 service stopped:** `services.t3` goes from `true` to `false`. Clears when `true` again.
+- **Offline:** a Machine in `offline.machines` has been Offline for `for` seconds (counted from 30 s after its last report, when it became Offline, and never from before the server started). Clears when it is Online. While a Machine is Offline its other Alerts are not evaluated.
+- An Alert fires when its condition starts, never again while it holds, and not again within `cooldown` seconds of the last time it fired. When it clears, subscribers get a quiet notification with the same `tag`, which replaces the Alert ("Stormtrooper CPU back to normal").
+- Conditions already true when the server starts fire once (so two full disks Alert on first start), except a VPN, which needs to be seen `connected` first. The state of each Alert is kept in SQLite (table `alert_state`), so a restart neither repeats nor forgets Alerts.
+- A disk or VPN that stops being reported can't clear by itself: its Alert is replaced by a quiet "D: on Stormtrooper is no longer reported". The state of finished Alerts is dropped once their `cooldown` is over.
+- **Delivery.** The server sends each notification to every subscription at once. It counts as delivered once at least one subscription accepts it (a `2xx`; `3xx` redirects are never followed and count as refusals); with no subscriptions it isn't. A fire that isn't delivered is sent again, at most once a minute, for 10 minutes while its condition holds; after that it waits for the next occurrence. A clear is sent only for an Alert that was delivered, and is retried the same way. Every fire and every clear of an Alert is a new generation, and an acknowledgement counts only for its own generation. When a subscription accepts a push that has since been superseded (a catch-up that hung while the Alert cleared, or an older clear after a newer fire), the server immediately sends that same subscription the Alert's newest notification, so a cleared Alert doesn't stay on screen. Failures are logged to the journal (the push service's host and status); they never delay or fail report handling. Subscriptions answering `404` or `410` are deleted.
+
+Push uses the Web Push protocol (RFC 8030) with VAPID (RFC 8292) and `aes128gcm` payload encryption (RFC 8291), implemented on `node:crypto`. The server makes a VAPID key pair on first start and keeps it in `vapid.json` beside the database (`~/.local/state/hangar/vapid.json` by default), as `{ "publicKey", "privateKey" }`: the base64url 65-byte uncompressed point and the raw 32-byte scalar. Its mode is set to 600 whenever it is loaded. If the file is unreadable, malformed, or its two keys don't match, the server logs the error and turns Alerts off: it never makes a new key, since that would invalidate every subscription, and the Alerts endpoints below (except `DELETE`) answer `503` until the file is fixed. The VAPID `sub` claim is `https://github.com/Hazihell/hangar`. The payload is JSON:
+
+```json
+{ "title": "Stormtrooper CPU high", "body": "97 % for 5 min: WSL node 61 %, WSL claude 18 %, chrome 6 %", "tag": "stormtrooper:cpu", "machine": "stormtrooper", "quiet": false }
+```
+
+The page's service worker shows it with `tag` (so a clearing notification replaces its Alert) and `silent: quiet`. Clicking it opens or focuses the Dashboard at `/#<machine>`.
+
+### `GET /api/alerts/key`
+
+`{ "publicKey": "<base64url uncompressed P-256 point>" }`, for `pushManager.subscribe`. `503` when Alerts are off.
+
+### `POST /api/alerts/subscriptions`
+
+The browser's `PushSubscription` as JSON (`{ endpoint, keys: { p256dh, auth } }`). `201`; `400` malformed. The server pushes to whatever endpoint a subscriber names, so it accepts only `https:` URLs without credentials, on port 443, at a known push service: `fcm.googleapis.com`, `android.googleapis.com`, `web.push.apple.com`, `updates.push.services.mozilla.com`, and any subdomain of `push.services.mozilla.com`, `push.apple.com` or `notify.windows.com`. Anything else (internal hosts, other ports, lookalike names) is `400`, and a stored endpoint outside the list is never pushed to. Needs a JSON `Content-Type`. Stored in SQLite (table `subscriptions`); subscribing again with the same endpoint replaces it. A push service answering `404` or `410` deletes the subscription. `503` when Alerts are off. Right after `201`, the new device is sent the Alerts that are firing now and haven't cleared (one notification each, as they were first sent), so a device that subscribes while two disks are full hears about both.
+
+### `DELETE /api/alerts/subscriptions`
+
+`{ "endpoint": "..." }`, JSON `Content-Type`. `204`, also when it wasn't subscribed.
+
+### `POST /api/alerts/test`
+
+`{ "endpoint": "..." }`. Sends that subscription a test notification ("Alerts are on for this device"). JSON `Content-Type`. `204`; `404` not subscribed; `502` the push service refused or couldn't be reached, with `{ "status": <its status, 0 if unreachable> }` in the body; `503` when Alerts are off.
+
 ## `GET /api/events`
 
 Server-sent events. Each event is named `machine`, and its data is one Machine in the same shape as above, except that `history` is replaced by `minute`: the current minute's running average, `{ t, cpu, ram, disk }`. The page replaces its last History point when `t` matches, otherwise appends it and drops points older than 24 h. `minute` is `null` when the current minute has no reports yet (as when a Machine turns Offline); the page then leaves History alone.
 
-The server sends an event on every report, when a Machine turns Offline, and when a VPN command starts, succeeds or fails.
+The server sends an event on every report, when a Machine turns Offline, and when a VPN command starts, succeeds or fails. Events carry `apps` like `GET /api/machines` does.

@@ -1,6 +1,6 @@
 # Hangar
 
-Keeps every computer that runs my coding agents set up the same way, and shows whether each one is up and how loaded it is.
+Keeps every computer that runs my coding agents set up the same way, shows whether each one is up, how loaded it is and by what, and alerts me when something goes wrong.
 
 ## Monitoring
 
@@ -31,9 +31,25 @@ A VPN connection a Machine's operating system manages, such as Steeprock: Connec
 _Avoid_: tunnel, network
 
 **Dashboard**:
-The page that shows every Machine: Online or Offline, its current Usage, its History and its VPNs, which it can also connect and disconnect.
+The page that shows every Machine: Online or Offline, its current Usage, its History, its VPNs (which it can connect and disconnect) and its Apps (which it can Quit).
 _Avoid_: monitor, status page
 
+**Process**:
+A program running on a Machine, as its operating system lists it, with the CPU and RAM it uses. On the PC, the processes inside WSL count too, listed under WSL.
+_Avoid_: task, job
+
+**App**:
+The processes that belong to one program, counted together: Chrome's dozen helpers are one App. The Dashboard lists Apps, and each expands to its Processes.
+_Avoid_: group, bundle
+
+**Top Apps**:
+The Apps using the most CPU or RAM. The Dashboard keeps the Top Apps of every History minute, so a spike can be explained after the fact.
+_Avoid_: culprits, offenders
+
+**Quit**:
+Asking a Process or App to close cleanly, as closing its window would. **Force quit** ends it without asking, and is offered only after Quit hasn't worked. Only your own Processes can be quit, never ones the Dashboard or your access to it depends on.
+_Avoid_: kill, terminate
+
 **Alert**:
-A browser push notification about a Machine, for example when it goes Offline or its disk fills. A VPN dropping is another candidate. Planned as a follow-up.
+A browser push notification about a problem on a Machine: a disk nearly full, CPU or RAM high for minutes on end, a VPN dropped, the T3 service stopped, or the PC Offline. When the problem clears, the Alert is quietly replaced by one saying so. Each browser or phone opts in.
 _Avoid_: alarm, warning
