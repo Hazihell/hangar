@@ -3,35 +3,136 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 const powershell = '/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe';
-import { reportFromLine, gpuTemperature, vpnScript, tempScript, processScript, script } from './collector.ts';
-test('PowerShell line maps Windows Usage and t3 status, skipping zero-size drives', () => {
-  const line = '\uFEFF{"cpu":12.5,"ram":{"used":100,"total":200},"disks":[{"name":"C:","used":30,"total":100},{"name":"D:","used":0,"total":0}]}';
-  assert.deepEqual(reportFromLine(line, 'pc', true), { machine: 'pc', cpu: 12.5, ram: { used: 100, total: 200 }, disks: [{ name: 'C:', used: 30, total: 100 }], services: { t3: true } });
-  assert.equal(reportFromLine(line, 'pc', false).services.t3, false);
-});
-test('malformed collector lines and invalid Usage are rejected', () => {
-  assert.throws(() => reportFromLine('not JSON', 'pc', false));
-  assert.throws(() => reportFromLine('{"cpu":101,"ram":{"used":1,"total":2},"disks":[]}', 'pc', false), /invalid Usage/);
+import { startCollector, collectorPids, vpnScript, tempScript, processScript, script } from './collector.ts';
+import type { CollectorProcess, CollectorClock } from './collector.ts';
+
+function deferred() {
+  let resolve!: (value: string | null) => void;
+  const promise = new Promise<string | null>(done => { resolve = done; });
+  return { promise, resolve };
+}
+const flush = () => new Promise<void>(resolve => setImmediate(resolve));
+const line = (cpu = 10, extra = {}) => JSON.stringify({ cpu, ram: { used: 1, total: 2 }, disks: [], ...extra });
+function session(intake: (report: any) => number = () => 204) {
+  let now = 0, available = true, cpus = () => 1;
+  const timers = new Set<{ at: number; ms?: number; run: () => void }>();
+  const schedule = (ms: number, run: () => void, repeat = false) => {
+    const timer = { at: now + ms, ms: repeat ? ms : undefined, run };
+    timers.add(timer);
+    return () => { timers.delete(timer); };
+  };
+  const clock: CollectorClock = { now: () => now, after: (ms, run) => schedule(ms, run), every: (ms, run) => schedule(ms, run, true) };
+  const reporters: { events: Parameters<CollectorProcess['start']>[0]; kills: number; close: () => void }[] = [];
+  const probes = { service: [] as ReturnType<typeof deferred>[], gpu: [] as ReturnType<typeof deferred>[] };
+  const reports: any[] = [];
+  const process: CollectorProcess = {
+    available: () => available,
+    start: events => {
+      let closed = false;
+      const reporter = { events, kills: 0, close: () => { if (!closed) { closed = true; events.close(); } } };
+      reporters.push(reporter);
+      return () => { if (!closed) { reporter.kills++; reporter.close(); } };
+    },
+    probe: file => { const result = deferred(); probes[file === 'systemctl' ? 'service' : 'gpu'].push(result); return result.promise; },
+    createSampler: count => { cpus = count; return () => [{ pid: 2, name: 'node', app: 'node', started: '1', own: true, cpu: 80 / cpus(), ram: 4 }]; },
+  };
+  let stop = () => {};
+  return {
+    reporters, probes, reports, timers,
+    stop() { stop(); },
+    start() { stop = startCollector('pc', report => { reports.push(report); return intake(report); }, { process, clock }); },
+    unavailable() { available = false; },
+    advance(ms: number) {
+      const end = now + ms;
+      for (;;) {
+        const next = [...timers].filter(t => t.at <= end).sort((a, b) => a.at - b.at)[0];
+        if (!next) break;
+        now = next.at;
+        if (next.ms) next.at += next.ms; else timers.delete(next);
+        next.run();
+      }
+      now = end;
+    },
+    send(value: string) { reporters.at(-1)!.events.line(value); },
+    finishAll() { for (const probe of [...probes.service, ...probes.gpu]) probe.resolve(null); },
+    finish(index: number, service: string | null = '', gpu: string | null = null) {
+      probes.service[index].resolve(service); probes.gpu[index].resolve(gpu);
+    },
+  };
+}
+
+test('collection waits for both probes and delivers enriched Usage in line order', async () => {
+  const s = session(); s.start();
+  s.send('\uFEFF{"collectorPid":123,"logicalCpus":8}');
+  assert.equal(collectorPids.has(123), true);
+  s.send('\uFEFF' + line(12.5, { disks: [{ name: 'C:', used: 30, total: 100 }, { name: 'D:', used: 0, total: 0 }], temps: { cpu: 49.5 }, vpns: [{ name: 'Steeprock', status: 'connected', kind: 'ppp' }] }));
+  s.send(line(20));
+  s.finish(1, null, 'N/A'); await flush();
+  assert.equal(s.reports.length, 0);
+  s.probes.service[0].resolve(''); await flush();
+  assert.equal(s.reports.length, 0);
+  s.probes.gpu[0].resolve('38\n41\n'); await flush();
+  assert.deepEqual(s.reports.map(r => r.cpu), [12.5, 20]);
+  assert.deepEqual(s.reports[0], { machine: 'pc', cpu: 12.5, ram: { used: 1, total: 2 }, disks: [{ name: 'C:', used: 30, total: 100 }], temps: { cpu: 49.5, gpu: 38 }, vpns: [{ name: 'Steeprock', status: 'connected', kind: 'ppp' }], services: { t3: true }, wsl: [{ pid: 2, name: 'node', app: 'node', started: '1', own: true, cpu: 10, ram: 4 }] });
+  assert.equal(s.reports[1].services.t3, false);
+  assert.equal('temps' in s.reports[1], false);
+  s.stop(); assert.equal(collectorPids.size, 0); assert.equal(s.timers.size, 0);
 });
 
-test('collector preserves OS-managed VPNs including status and internal kind', () => {
-  const line = '{"cpu":10,"ram":{"used":1,"total":2},"disks":[],"vpns":[{"name":"Steeprock","status":"connected","kind":"ppp"}]}';
-  assert.deepEqual(reportFromLine(line, 'pc', true).vpns, [{ name: 'Steeprock', status: 'connected', kind: 'ppp' }]);
+test('malformed Usage and a throwing intake do not block the next report', async () => {
+  const s = session(report => { if (report.cpu === 10) throw new Error('intake unavailable'); return 204; }); s.start();
+  for (const value of ['not JSON', line(101), line(10), line(20)]) s.send(value);
+  s.finishAll();
+  await flush();
+  assert.deepEqual(s.reports.map(r => r.cpu), [10, 20]);
+  s.advance(44_999); assert.equal(s.reporters[0].kills, 0);
+  s.stop();
 });
 
-test('collector merges the GPU temperature from nvidia-smi with the CPU one from Windows', () => {
-  const line = '{"cpu":10,"ram":{"used":1,"total":2},"disks":[],"temps":{"cpu":49.5}}';
-  assert.deepEqual(reportFromLine(line, 'pc', true, 38).temps, { cpu: 49.5, gpu: 38 });
-  assert.deepEqual(reportFromLine(line, 'pc', true).temps, { cpu: 49.5 });
-  assert.deepEqual(reportFromLine(line.replace(',"temps":{"cpu":49.5}', ''), 'pc', true, 38).temps, { gpu: 38 });
-  assert.equal('temps' in reportFromLine(line.replace(',"temps":{"cpu":49.5}', ''), 'pc', true), false);
-  assert.equal('temps' in reportFromLine(line.replace('{"cpu":49.5}', '{"cpu":1000}'), 'pc', true), false);
+test('rejected intake does not feed the watchdog', async () => {
+  const s = session(() => 400); s.start(); s.advance(40_000);
+  s.send(line()); s.finish(0); await flush();
+  s.advance(5000); assert.equal(s.reporters[0].kills, 1);
+  s.advance(1000); assert.equal(s.reporters.length, 2);
+  s.stop();
 });
-test('nvidia-smi output is the first GPU line or no temperature', () => {
-  assert.equal(gpuTemperature('38\n'), 38);
-  assert.equal(gpuTemperature('38\n41\n'), 38);
-  assert.equal(gpuTemperature('41'), 41);
-  for (const output of ['', '\n', 'N/A\n', '[N/A]', 'No devices were found\n', '38 C']) assert.equal(gpuTemperature(output), undefined, output);
+
+test('crashes back off to a minute and accepted Usage resets the delay', async () => {
+  const s = session(); s.start();
+  for (const delay of [1000, 2000, 4000, 8000, 16000, 32000, 60000, 60000]) {
+    const count = s.reporters.length;
+    s.reporters.at(-1)!.close();
+    s.advance(delay - 1); assert.equal(s.reporters.length, count);
+    s.advance(1); assert.equal(s.reporters.length, count + 1);
+  }
+  s.send(line()); s.finish(0); await flush();
+  s.reporters.at(-1)!.close(); s.advance(999);
+  const count = s.reporters.length;
+  s.advance(1); assert.equal(s.reporters.length, count + 1);
+  s.reporters.at(-1)!.close(); s.stop(); s.advance(60_000);
+  assert.equal(s.reporters.length, count + 1); assert.equal(s.timers.size, 0);
+});
+
+test('watchdog restarts a hung reporter and ignores its pending probes', async () => {
+  const s = session(); s.start(); s.send(line());
+  s.advance(44_999); assert.equal(s.reporters[0].kills, 0);
+  s.advance(1); assert.equal(s.reporters[0].kills, 1);
+  s.advance(1000); assert.equal(s.reporters.length, 2);
+  s.finish(0); await flush(); assert.equal(s.reports.length, 0);
+  s.send(line(20)); s.finish(1); await flush(); assert.equal(s.reports[0].cpu, 20);
+  s.stop();
+});
+
+test('stop during probes discards Usage and releases timers without a restart', async () => {
+  const s = session(); s.start(); s.send(line());
+  s.stop(); s.stop(); s.finish(0); await flush(); s.advance(120_000);
+  assert.equal(s.reports.length, 0); assert.equal(s.reporters.length, 1);
+  assert.equal(s.reporters[0].kills, 1); assert.equal(s.timers.size, 0);
+});
+
+test('unavailable reporter starts no processes or timers', () => {
+  const s = session(); s.unavailable(); s.start(); s.stop();
+  assert.equal(s.reporters.length, 0); assert.equal(s.timers.size, 0);
 });
 
 test('Windows CPU temperature is found by HWiNFO label despite holes, parsed in any culture, and omitted on failure', { skip: !existsSync(powershell) }, () => {
@@ -70,7 +171,7 @@ $report = @{cpu=10;ram=@{used=1;total=2};disks=@()}
 ${vpnScript}
 $report | ConvertTo-Json -Depth 4 -Compress`;
     const output = execFileSync(powershell, ['-NoProfile', '-NonInteractive', '-OutputFormat', 'Text', '-EncodedCommand', Buffer.from(source, 'utf16le').toString('base64')], { encoding: 'utf8', timeout: 20_000 });
-    const report = reportFromLine(output.trim(), 'pc', true);
+    const report = JSON.parse(output.trim());
     if (failure === 'none') assert.deepEqual(report.vpns, [
       { name: 'Escritório', status: 'connected', kind: 'ppp' },
       { name: 'Other', status: 'disconnected', kind: 'other' },
@@ -128,6 +229,11 @@ $report | ConvertTo-Json -Depth 4 -Compress`;
   assert.ok(processes.length <= 400);
   for (const p of processes) { assert.equal(p.own, false); assert.equal(p.name, 'café.exe'); }
 });
-test('Windows collector header exposes its logical CPU count for WSL normalization', () => {
-  assert.match(script, /logicalCpus=\$logicalCpus/);
+
+test('Windows reporter emits its PID and logical CPU count before Usage', { skip: !existsSync(powershell) }, () => {
+  const source = script.slice(0, script.indexOf('while ($true)'));
+  const output = execFileSync(powershell, ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(source, 'utf16le').toString('base64')], { encoding: 'utf8', timeout: 20_000 });
+  const header = JSON.parse(output.trim());
+  assert.ok(Number.isSafeInteger(header.collectorPid) && header.collectorPid > 0);
+  assert.ok(Number.isSafeInteger(header.logicalCpus) && header.logicalCpus > 0);
 });
