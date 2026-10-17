@@ -46,18 +46,15 @@ export function VpnList({ machine, muted, locked }: {
   )
 }
 
-/** The server forgets a VPN command after 90 s; our stand-in lapses a little later. */
-const OPTIMISTIC_MS = 100_000
-
 /** Tracks one VPN command until its Machine event shows pending, success or failure. */
-function useVpnCommand(machineId: string, vpn: Vpn) {
+function useVpnCommand(machine: Machine, vpn: Vpn) {
   const [last, setLast] = useState<VpnAction | null>(null)
   const command = useMachineCommand({
-    send: (action: VpnAction) => sendVpnCommand(machineId, vpn.name, action),
+    send: (action: VpnAction) => sendVpnCommand(machine.id, vpn.name, action),
     seen: (action) => vpn.pending?.action === action || vpn.status === targetOf(action),
     errorAt: vpn.error?.at,
     fallback: "The command couldn’t be sent.",
-    optimisticMs: OPTIMISTIC_MS,
+    optimisticMs: machine.limits?.vpnMs ?? null,
   })
   const message = command.refusal?.message ?? vpn.error?.message ?? null
   return {
@@ -68,7 +65,7 @@ function useVpnCommand(machineId: string, vpn: Vpn) {
 }
 
 function VpnRow({ machine, vpn, muted, locked }: { machine: Machine; vpn: Vpn; muted: boolean; locked: string | null }) {
-  const { pending, error: lastError, run } = useVpnCommand(machine.id, vpn)
+  const { pending, error: lastError, run } = useVpnCommand(machine, vpn)
   // A new command supersedes the last one's error.
   const error = pending ? null : lastError
   const [confirming, setConfirming] = useState(false)

@@ -13,7 +13,7 @@ import { dirname } from 'node:path';
 export type VapidKeys = { publicKey: string; privateKey: string };
 export type Subscription = { endpoint: string; keys: { p256dh: string; auth: string } };
 export type SendResult = { ok: boolean; status: number; gone: boolean; error?: string };
-export type FetchLike = (url: string, init: { method: string; headers: Record<string, string>; body: Buffer; signal?: AbortSignal; redirect?: 'manual' }) => Promise<{ status: number; ok: boolean }>;
+export type FetchLike = (url: string, init: { method: string; headers: Record<string, string>; body: Buffer<ArrayBuffer>; signal?: AbortSignal; redirect?: 'manual' }) => Promise<{ status: number; ok: boolean }>;
 
 /**
  * VAPID `sub` claim. A real https URL: push services only require a mailto: or https: URL, but
@@ -89,7 +89,7 @@ export type EncryptOptions = {
 const RECORD_SIZE = 4096;
 
 /** Encrypts `payload` for `subscription` as one aes128gcm record (RFC 8291). Returns the request body. */
-export function encrypt(payload: Buffer, subscription: { keys: { p256dh: string; auth: string } }, opts: EncryptOptions = {}): Buffer {
+export function encrypt(payload: Buffer, subscription: { keys: { p256dh: string; auth: string } }, opts: EncryptOptions = {}): Buffer<ArrayBuffer> {
   const uaPublic = unb64(subscription.keys.p256dh);
   const authSecret = unb64(subscription.keys.auth);
   const salt = opts.salt ?? randomBytes(16);

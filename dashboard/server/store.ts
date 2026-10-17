@@ -1,7 +1,8 @@
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
-export type Machine = { id: string; name: string; os: string; collector: string; ssh?: string };
+import type { ConfiguredMachine as Machine } from '../contract.ts';
+export type { ConfiguredMachine as Machine } from '../contract.ts';
 /** The database file. Usage and the Alerts each keep their own tables in it. */
 export class Store {
   db: DatabaseSync;

@@ -4,9 +4,8 @@ import type { DatabaseSync } from 'node:sqlite';
 import { cutoff, finite, minute, object, online, pid, text, token } from './rules.ts';
 import type { Process, Vpn } from './rules.ts';
 import type { Machine } from './store.ts';
-export type Temps = { cpu?: number; gpu?: number };
-export type Report = { machine: string; cpu: number; ram: { used: number; total: number }; disks: { name: string; used: number; total: number }[]; services?: Record<string, boolean>; vpns?: Vpn[]; processes?: Process[]; wsl?: Process[]; reporterPid?: number; temps?: Temps };
-export type Point = { t: string; cpu: number; ram: number; disk: number; temp: number | null };
+import type { Temps, Report, ReportVpn, HistoryPoint as Point, Machine as WireMachine, MachineEvent, MinuteResponse } from '../contract.ts';
+export type { Temps, Report, ReportVpn, HistoryPoint as Point } from '../contract.ts';
 /** `status` is the HTTP answer; an accepted report comes back as the Machine and the normalised report that was recorded. */
 export type Intake = { status: 204; machine: Machine; report: Report } | { status: 400 | 404 | 500 };
 const bytes = (v: unknown) => object(v) && finite(v.used) && finite(v.total) && v.total > 0 && v.used >= 0 && v.used <= v.total;
@@ -26,7 +25,7 @@ export function acceptReport(value: unknown): Report | null {
     (v.vpns === undefined || (Array.isArray(v.vpns) && v.vpns.every(vpn => object(vpn) && typeof vpn.name === 'string' && vpn.name.length > 0 && vpn.name.length <= 256 && !/^[\/-]|["\x00-\x1f\x7f-\x9f]/.test(vpn.name) && ['connected', 'disconnected', 'connecting', 'disconnecting'].includes(vpn.status) && ['ppp', 'other'].includes(vpn.kind)))))) return null;
   const report: Report = { machine: v.machine, cpu: v.cpu, ram: { used: v.ram.used, total: v.ram.total }, disks: v.disks.map(d => ({ name: d.name, used: d.used, total: d.total })) };
   if (v.services !== undefined) report.services = { ...v.services };
-  if (v.vpns !== undefined) report.vpns = v.vpns.map(x => ({ name: x.name, status: x.status, kind: x.kind }));
+  if (v.vpns !== undefined) report.vpns = v.vpns.map((x: ReportVpn) => ({ name: x.name, status: x.status, kind: x.kind }));
   // Preserve healthy Usage when an OS Process disappears or produces a malformed row.
   if (v.processes !== undefined) report.processes = v.processes.filter(processRow);
   if (v.wsl !== undefined) report.wsl = v.wsl.filter(processRow);
@@ -116,25 +115,25 @@ export class Usage {
     const row = this.db.prepare('SELECT report FROM latest WHERE machine=?').get(id) as any;
     return row ? JSON.parse(row.report).vpns ?? [] : [];
   }
-  topApps(id: string, t: string, now: number) {
+  topApps(id: string, t: string, now: number): MinuteResponse | null {
     const time = Date.parse(t);
     if (!Number.isFinite(time) || time < cutoff(now)) return null;
     const row = this.db.prepare('SELECT a.samples,a.sums FROM history h LEFT JOIN top_apps a ON a.machine=h.machine AND a.t=h.t WHERE h.machine=? AND h.t=?').get(id, time) as any;
     return row ? { t: new Date(time).toISOString(), apps: top((row.sums ? JSON.parse(row.sums) : []).map((a: any) => ({ ...a, cpu: a.cpu / (row.samples || 1), ram: a.ram / (row.samples || 1) })), 5) } : null;
   }
-  snapshot(machine: Machine, now: number, withHistory = true) {
-    const latest = this.db.prepare('SELECT at,report FROM latest WHERE machine=?').get(machine.id) as any;
+  snapshot(machine: Machine, now: number, withHistory = true): WireMachine {
+    const latest = this.db.prepare('SELECT at,report FROM latest WHERE machine=?').get(machine.id) as { at: number; report: string } | undefined;
     const { collector, ssh, ...identity } = machine;
     const at = latest ? new Date(latest.at).toISOString() : null;
-    const report = latest ? JSON.parse(latest.report) : null;
+    const report: Report | null = latest ? JSON.parse(latest.report) : null;
     const vpns = report?.vpns ?? [];
-    if (report) { delete report.machine; delete report.vpns; }
-    const history = !withHistory ? [] : this.db.prepare('SELECT t,cpu,ram,disk,temp FROM history WHERE machine=? AND t>=? ORDER BY t DESC LIMIT 1440').all(machine.id, cutoff(now)).reverse().map((p: any): Point => ({ ...p, t: new Date(p.t).toISOString() }));
+    const usage = report && at ? { at, cpu: report.cpu, ram: report.ram, disks: report.disks, ...(report.services === undefined ? {} : { services: report.services }), ...(report.temps === undefined ? {} : { temps: report.temps }) } : null;
+    const history = !withHistory ? [] : this.db.prepare('SELECT t,cpu,ram,disk,temp FROM history WHERE machine=? AND t>=? ORDER BY t DESC LIMIT 1440').all(machine.id, cutoff(now)).reverse().map((p: any): Point => ({ t: new Date(p.t).toISOString(), cpu: p.cpu, ram: p.ram, disk: p.disk, temp: p.temp }));
     const known = this.known.get(machine.id);
     const apps = known ? buildApps(known, machine, known.at, this.protection) : null;
-    return { ...identity, apps, online: online(latest?.at ?? null, now), lastSeen: at, usage: report ? { at, ...report } : null, vpns: vpns.map((v: any) => ({ name: v.name, status: v.status, pending: null, error: null })), history };
+    return { ...identity, apps, online: online(latest?.at ?? null, now), lastSeen: at, usage, vpns: vpns.map(v => ({ name: v.name, status: v.status, pending: null, error: null })), history };
   }
-  event(machine: Machine, now: number) {
+  event(machine: Machine, now: number): MachineEvent {
     const { history, ...state } = this.snapshot(machine, now);
     return { ...state, minute: history.find(p => p.t === new Date(minute(now)).toISOString()) ?? null };
   }

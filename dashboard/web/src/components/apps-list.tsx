@@ -63,7 +63,7 @@ export function AppsSection({ machine, muted, locked }: {
   const askedFrom = useRef<HTMLElement | null>(null)
   const listId = useId()
 
-  const quits = useQuits(machine.id, apps)
+  const quits = useQuits(machine.id, apps, machine.limits?.maxTargets)
 
   // The dialog's subject, from the latest report; null closes it.
   const confirmation = asking ? quits.confirm(asking, machine.name) : null

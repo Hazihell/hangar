@@ -3,7 +3,9 @@ import type { Report } from './usage.ts';
 import type { Machine } from './store.ts';
 import { executable, mayQuit } from './quit.ts';
 import type { Protection } from './quit.ts';
-export type App = { name: string; cpu: number; ram: number; count: number; quit: boolean; processes: { pid: number; name: string; cpu: number; ram: number; started: string; quit: boolean }[]; apps?: App[] };
+import type { App, Apps } from '../contract.ts';
+export type { App } from '../contract.ts';
+export const PROCESS_LIMIT = 20;
 export function top<T extends { cpu: number; ram: number }>(apps: T[], n: number): T[] {
   const cpu = [...apps].sort((a, b) => b.cpu - a.cpu), ram = [...apps].sort((a, b) => b.ram - a.ram);
   return [...new Set([...cpu.slice(0, n), ...ram.slice(0, n)])];
@@ -18,10 +20,10 @@ export function allApps(processes: Process[], machine: Machine, where?: 'wsl', p
     app.cpu += p.cpu; app.ram += p.ram; app.count++; app.quit ||= quit;
     app.processes.push({ pid: p.pid, name: p.name, cpu: p.cpu, ram: p.ram, started: p.started, quit });
   }
-  for (const app of apps.values()) app.processes = app.processes.sort((a, b) => b.cpu - a.cpu).slice(0, 20);
+  for (const app of apps.values()) app.processes = app.processes.sort((a, b) => b.cpu - a.cpu).slice(0, PROCESS_LIMIT);
   return [...apps.values()];
 }
-export function buildApps(report: Partial<Report>, machine: Machine, at: string, protection: Protection = {}) {
+export function buildApps(report: Partial<Report>, machine: Machine, at: string, protection: Protection = {}): Apps | null {
   if (report.processes === undefined && report.wsl === undefined) return null;
   const list = allApps(report.processes ?? [], machine, undefined, protection, report.reporterPid);
   if (machine.collector === 'wsl') {

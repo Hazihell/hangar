@@ -1,7 +1,9 @@
 import { readFileSync } from 'node:fs';
 import type { Machine } from './store.ts';
 import type { Vpn } from './rules.ts';
-export type Action = 'connect' | 'disconnect';
+import type { VpnAction as Action, Vpn as WireVpn } from '../contract.ts';
+export type { VpnAction as Action } from '../contract.ts';
+export const VPN_TIMEOUT = 90_000;
 export type Exec = (file: string, args: string[], options: { timeout: number; encoding?: 'utf8'; maxBuffer?: number; detached?: boolean }, callback: (error: any, stdout: string, stderr: string) => void) => unknown;
 const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
 function vpnCommand(machine: Machine, vpn: Vpn, action: Action) {
@@ -47,8 +49,8 @@ export function createVpn(options: Options) {
     command.pending = null;
   }
   function expire(command: Command, now: number) {
-    if (!command.pending || now - Date.parse(command.pending.since) < 90_000) return false;
-    clear(command); command.error = { message: 'No change after 90 s', at: new Date(now).toISOString() };
+    if (!command.pending || now - Date.parse(command.pending.since) < VPN_TIMEOUT) return false;
+    clear(command); command.error = { message: `No change after ${VPN_TIMEOUT / 1000} s`, at: new Date(now).toISOString() };
     return true;
   }
   /** Starts the command; the status is the HTTP answer, 202 once the VPN shows `pending`. */
@@ -62,7 +64,7 @@ export function createVpn(options: Options) {
     const current: Command = { machine, action, pending: { action, since: new Date(now).toISOString() }, error: null };
     if (!commands.has(machine.id)) commands.set(machine.id, new Map());
     commands.get(machine.id)!.set(name, current);
-    current.timer = setTimeout(() => { if (expire(current, now + 90_000)) emit(machine, clock()); }, 90_000);
+    current.timer = setTimeout(() => { if (expire(current, now + VPN_TIMEOUT)) emit(machine, clock()); }, VPN_TIMEOUT);
     emit(machine, now); options.started(now);
     const done = (error: any, stdout: string, stderr: string) => {
       if (closed || commands.get(machine.id)?.get(name) !== current || !current.pending || !error) return;
@@ -97,7 +99,7 @@ export function createVpn(options: Options) {
     }
   }
   /** The Machine's VPNs with the state of their commands. */
-  const state = (id: string, vpns: { name: string }[]) => vpns.map(vpn => {
+  const state = (id: string, vpns: WireVpn[]): WireVpn[] => vpns.map(vpn => {
     const command = commands.get(id)?.get(vpn.name);
     return command ? { ...vpn, pending: command.pending, error: command.error } : vpn;
   });

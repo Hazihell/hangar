@@ -1,4 +1,4 @@
-import type { Process, QuitRequest, Report, Target } from './rules.ts';
+import type { Process, QuitRequest, Report, QuitTarget as Target, QuitResponse, QuitProcessResult as Result } from '../contract.ts';
 import type { Machine } from './store.ts';
 import type { Exec } from './vpn.ts';
 import { commandError } from './vpn.ts';
@@ -16,7 +16,7 @@ export function mayQuit(p: Process, machine: Machine, where: 'wsl' | undefined, 
   if (machine.collector === 'wsl') return !windows.has(name) && !protection.windows?.has(p.pid);
   return !name.startsWith('sshd') && !mac.has(name) && p.app.toLowerCase() !== 'tailscale' && p.pid !== reporterPid;
 }
-export type Result = { pid: number; result: 'sent' | 'gone' | 'changed' | 'protected' | 'failed'; message?: string };
+export type { QuitProcessResult as Result } from '../contract.ts';
 export type Local = { read: typeof readProc; quit: (pid: number, signal: 'SIGTERM' | 'SIGKILL') => void; uid: number };
 const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
 const macScript = `force=$1; reporter=$2; shift 2
@@ -160,7 +160,7 @@ export type QuitOptions = {
   /** The Windows collector's own PIDs, which may never be quit. */
   collectorPids?: Set<number>;
 };
-export type Outcome = { status: 200; results: (Result & { started: string; where?: 'wsl' })[] } | { status: 404 | 409 } | { status: 503; message: string };
+export type Outcome = ({ status: 200 } & QuitResponse) | { status: 404 | 409 } | { status: 503; message: string };
 const systemctl = () => new Promise<number | null>(resolve => {
   execFile('systemctl', ['--user', 'show', '-p', 'MainPID', '--value', 't3code.service'], { timeout: 3000, encoding: 'utf8' }, (error, stdout) => resolve(!error && /^\d+\s*$/.test(stdout) ? Number(stdout.trim()) : null));
 });

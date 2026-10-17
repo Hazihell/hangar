@@ -69,3 +69,6 @@ _Avoid_: upgrade, patch, outdated item
 **Alert**:
 A browser push notification about a problem on a Machine: a disk nearly full, CPU or RAM high or the CPU too hot for minutes on end, a VPN dropped, the T3 service stopped, or the PC Offline. When the problem clears, the Alert is quietly replaced by one saying so. Each browser or phone opts in.
 _Avoid_: alarm, warning
+
+**Attention**:
+The active Alert conditions the Dashboard's banner shows for a Machine. The same Alert rules decide when each begins and clears; a push notification muted by the cooldown still needs Attention.

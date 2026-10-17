@@ -25,7 +25,7 @@ type Options<Input, Result> = {
   fallback: string
   onSent?: (input: Input) => void
   /** VPN commands outlive the HTTP acknowledgment; others only bridge its event. */
-  optimisticMs?: number
+  optimisticMs?: number | null
   /** Quit keeps its answer for row-state interpretation and a delayed Force quit. */
   retain?: { settleMs: number }
 }
@@ -108,7 +108,7 @@ export function useMachineCommands<Input, Result>(
       else current.current.delete(key)
       publish()
     }
-    if (options.optimisticMs !== undefined)
+    if (options.optimisticMs != null)
       later(
         () => patch((a) => (a.phase === "refused" ? a : null)),
         options.optimisticMs

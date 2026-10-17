@@ -5,9 +5,6 @@ import type { Apps, Where } from "@/lib/types"
 /** A Process still listed this long after Quit was sent is offered Force quit. */
 export const FORCE_AFTER_MS = 10_000
 
-/** The server takes at most this many `targets` in one Quit. */
-const MAX_TARGETS = 200
-
 /**
  * What a Quit is about: an App (by name, on the Machine itself or inside WSL)
  * or one Process (by its key, which a reused PID doesn't share).
@@ -103,7 +100,7 @@ export function answered(request: QuitRequest, answers: QuitResult[], report: Ap
   // that arrived meanwhile may list another Process under the same PID,
   // so nothing here is looked up again.
   const targets: QuitTarget[] =
-    "targets" in request
+    request.targets !== undefined
       ? request.targets
       : answers.map((r) => {
           const where = r.where ?? request.where
@@ -125,12 +122,12 @@ export function answered(request: QuitRequest, answers: QuitResult[], report: Ap
  * that came after FORCE_AFTER_MS still lists it. An answer only counts while
  * its run is the Subject's latest.
  */
-export function quitRuns(runs: Run[], report: Apps | null, now: number): QuitRuns {
+export function quitRuns(runs: Run[], report: Apps | null, now: number, maxTargets?: number): QuitRuns {
   const index = indexProcesses(report)
   const present = (key: string) => index.has(key)
   const runOf = (subject: Subject) => runs.find((r) => subjectKey(r.subject) === subjectKey(subject))
   const targetsOf = (run: Run): QuitTarget[] =>
-    run.phase === "answered" ? run.answer.targets : "targets" in run.request ? run.request.targets : []
+    run.phase === "answered" ? run.answer.targets : run.request.targets !== undefined ? run.request.targets : []
 
   /** The wait is over: FORCE_AFTER_MS have passed and a newer report came. */
   const waited = (answer: Answer) => now - answer.at >= FORCE_AFTER_MS && report?.at !== answer.reportAt
@@ -143,7 +140,7 @@ export function quitRuns(runs: Run[], report: Apps | null, now: number): QuitRun
     if (run.phase === "refused") return { kind: "idle", note: { tone: "error", text: `Couldn’t quit. ${run.error}` } }
 
     const { answer } = run
-    const byName = "app" in run.request ? run.request : null
+    const byName = run.request.app !== undefined ? run.request : null
     const total = answer.targets.length
     const resultOf = (t: QuitTarget) => answer.results[targetKey(t)]
     const sent = answer.targets.filter((t) => resultOf(t)?.result === "sent")
@@ -225,6 +222,7 @@ export function quitRuns(runs: Run[], report: Apps | null, now: number): QuitRun
 
   function confirm(ask: Ask, machineName: string): Confirmation | null {
     const { subject, force } = ask
+    if (force && maxTargets === undefined) return null
     if (subject.kind === "app") {
       const app = findApp(report, subject.name, subject.where)
       if (!app) return null
@@ -236,7 +234,7 @@ export function quitRuns(runs: Run[], report: Apps | null, now: number): QuitRun
         const current = state(subject)
         if (current.kind !== "stuck") return null
         const asked = new Set((ask.targets ?? []).map(targetKey))
-        const targets = current.remaining.filter((t) => asked.has(targetKey(t))).slice(0, MAX_TARGETS)
+        const targets = current.remaining.filter((t) => asked.has(targetKey(t))).slice(0, maxTargets)
         return targets.length === 0 ? null : { ...common, request: { targets }, asks: targets.length }
       }
       if (!app.quit) return null

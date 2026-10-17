@@ -1,9 +1,12 @@
-import { createPower } from './power.ts';
-import { createUpdates, detachedExec } from './updates.ts';
+import type { Machine as WireMachine, MachineEvent, MachinesResponse, MachineLimits, QuitResponse } from '../contract.ts';
+import { PROCESS_LIMIT } from './apps.ts';
+import { MAX_TARGETS } from './rules.ts';
+import { createPower, POWER_TIMEOUT } from './power.ts';
+import { createUpdates, detachedExec, UPDATE_TIMEOUT } from './updates.ts';
 import { createQuit } from './quit.ts';
 import type { Local } from './quit.ts';
 import { execFile } from 'node:child_process';
-import { createVpn } from './vpn.ts';
+import { createVpn, VPN_TIMEOUT } from './vpn.ts';
 import type { Exec } from './vpn.ts';
 import { createServer } from 'node:http';
 import type { ServerResponse } from 'node:http';
@@ -17,7 +20,7 @@ import type { Machine } from './store.ts';
 import { Usage } from './usage.ts';
 import { validQuit } from './rules.ts';
 import { startCollector, collectorPids } from './collector.ts';
-import { createAlerts, loadRules, tempLimits } from './alerts.ts';
+import { createAlerts, loadRules, tempLimits, usageLimits } from './alerts.ts';
 import type { Rules } from './alerts.ts';
 import type { FetchLike } from './push.ts';
 const root = fileURLToPath(new URL('..', import.meta.url));
@@ -43,12 +46,14 @@ export function createDashboard(options: { db: string; t3Db?: string; hangar?: s
   const exec = options.exec ?? execFile;
   const quit = createQuit({ processes: id => usage.processes(id), online: machine => usage.snapshot(machine, clock(), false).online, exec, local: options.local, mainPid: options.mainPid, watch: options.collect !== false, collectorPids });
   const usage = new Usage(store.db, machines, quit.protection);
-  function state(machine: Machine, now: number, event = false, history = true) {
+  function state(machine: Machine, now: number, event: true, history?: boolean): MachineEvent;
+  function state(machine: Machine, now: number, event?: false, history?: boolean): WireMachine;
+  function state(machine: Machine, now: number, event = false, history = true): WireMachine | MachineEvent {
     const value = event ? usage.event(machine, now) : usage.snapshot(machine, now, history);
-    value.vpns = vpn.state(machine.id, value.vpns);
-    if (machine.collector === 'wsl') Object.assign(value, { power: power.state(machine.id) });
-    Object.assign(value, { updates: updates.state(machine), tempLimits: tempLimits(rules, machine.id) });
-    return value;
+    const limits: MachineLimits = { vpnMs: VPN_TIMEOUT, powerMs: POWER_TIMEOUT, updateMs: UPDATE_TIMEOUT, processes: PROCESS_LIMIT, maxTargets: MAX_TARGETS, usage: usageLimits(rules) };
+    return { ...value, vpns: vpn.state(machine.id, value.vpns),
+      ...(machine.collector === 'wsl' ? { power: power.state(machine.id) } : {}),
+      updates: updates.state(machine), tempLimits: tempLimits(rules, machine.id), limits, attention: alerts.attention(machine.id) };
   }
   const vpn = createVpn({ exec, clock, vpns: id => usage.vpns(id), online: (machine, now) => usage.snapshot(machine, now, false).online, emit: (machine, now) => emit(machine, now), started: now => evaluateAlerts(now) });
   const power = createPower(exec, clock, (machine, now) => emit(machine, now), () => observeSuspension(clock()), now => { alerts.recover(now); power.resume(now); });
@@ -57,7 +62,8 @@ export function createDashboard(options: { db: string; t3Db?: string; hangar?: s
   const rules = options.rules ?? loadRules(resolve(root, 'alerts.json'));
   const alerts = createAlerts({ db: store.db, dbPath: options.db, rules, vapid: options.vapid, fetch: options.fetch, clock, startedAt });
   function evaluateAlerts(now: number, completedDisconnects: { machine: string; vpn: string }[] = []) {
-    alerts.observe(machines.map((m: Machine) => state(m, now, false, false)), now, completedDisconnects);
+    const changed = new Set(alerts.observe(machines.map((m: Machine) => state(m, now, false, false)), now, completedDisconnects));
+    for (const m of machines) if (changed.has(m.id)) emit(m, now);
   }
   const dist = options.dist ?? resolve(root, 'web/dist');
   // Names the page being served, so a tab still running an older one can tell it was rebuilt. Rehashed when index.html changes.
@@ -83,7 +89,7 @@ export function createDashboard(options: { db: string; t3Db?: string; hangar?: s
     if (result.status !== 204) return result.status;
     // The report that shows a disconnect done also clears `pending`; the Alerts must hear of it first.
     const completed = vpn.reconcile(result.machine, result.report.vpns);
-    emit(result.machine, now); evaluateAlerts(now, completed); return 204;
+    evaluateAlerts(now, completed); emit(result.machine, now); return 204;
   }
   const server = createServer(async (req, res) => {
     try {
@@ -121,7 +127,7 @@ export function createDashboard(options: { db: string; t3Db?: string; hangar?: s
         if (!validQuit(value)) { res.writeHead(400).end(); return; }
         const outcome = await quit.handle(machines.find((m: Machine) => m.id === id), value);
         if (outcome.status !== 200) { res.writeHead(outcome.status).end('message' in outcome ? outcome.message : ''); return; }
-        res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ results: outcome.results })); return;
+        res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ results: outcome.results } satisfies QuitResponse)); return;
       }
       const powerPath = path.match(/^\/api\/machines\/([^/]+)\/power$/);
       if (req.method === 'POST' && powerPath) {
@@ -196,7 +202,7 @@ export function createDashboard(options: { db: string; t3Db?: string; hangar?: s
       const read = req.method === 'GET' || req.method === 'HEAD'; // node sends no body for HEAD
       if (read && path === '/api/machines') {
         const now = clock(); usage.prune(now);
-        res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ now: new Date(now).toISOString(), build: buildId(), machines: machines.map((m: Machine) => state(m, now)) })); return;
+        res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ now: new Date(now).toISOString(), build: buildId(), machines: machines.map((m: Machine) => state(m, now)) } satisfies MachinesResponse)); return;
       }
       if (req.method === 'GET' && path === '/api/events') {
         res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });

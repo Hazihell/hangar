@@ -1,4 +1,6 @@
 // Alerts own their rules, durable state and delivery to subscribed browsers.
+import type { Attention, LevelLimits, MachineLimits } from '../contract.ts';
+export type { Attention } from '../contract.ts';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
@@ -63,12 +65,13 @@ type Latest = Msg & { kind: 'fire' | 'clear'; gen: number; at: number };
 /**
  * Per Alert (by tag):
  * - `active`: its condition holds (or held and hasn't cleared); cooldown-muted occurrences are active too.
+ * - `occurrence`: what an active Alert says about itself, as of when it began, whether or not that fire was muted; it is what the Dashboard's banner shows.
  * - `delivered`: a device has accepted its fire notification and no clear has replaced it yet.
  * - `outbox`: the fire or clear notification not yet accepted by any subscription.
  * - `gen`, `latest`: the generation counter and the newest notification, so a late acknowledgement of an older one can be answered with it, and a new device can be told of an Alert that is firing.
  * - `since`/`sampleAt`: start and latest sample of the CPU/RAM/temperature streak, or when an Offline Machine's clock started.
  */
-type Entry = { active: boolean; delivered: boolean; outbox: Outbox | null; gen: number; latest: Latest | null; lastFired: number | null; since: number | null; sampleAt: number | null };
+type Entry = { active: boolean; occurrence: Msg | null; delivered: boolean; outbox: Outbox | null; gen: number; latest: Latest | null; lastFired: number | null; since: number | null; sampleAt: number | null };
 /** `vpns` remembers the VPNs last seen `connected` (and not being disconnected on purpose), by tag. */
 export type AlertsState = { entries: Record<string, Entry>; vpns: Record<string, 'connected'> };
 
@@ -84,6 +87,8 @@ export const RETRY_EVERY = 60_000;
 export const RETRY_FOR = 10 * 60_000;
 /** Samples further apart than this don't make one CPU/RAM streak (a restart, sleep or Offline in between). */
 export const MAX_GAP = 60_000;
+/** The share of CPU, RAM or disk the page starts to call high. */
+const HIGH = 80;
 /** A Machine is Offline this long after its last report. */
 const ONLINE_FOR = 30_000;
 
@@ -98,10 +103,16 @@ const validTemp = (v: any) => validThreshold(v, true, 150) && (v.machines === un
   Object.values(v.machines).every(o => object(o) && Object.keys(o).every(k => k === 'at' || k === 'clear') && validThreshold({ ...v, ...o }, true, 150))));
 
 /** What the page colors a Machine's CPU temperature by: `high` is where it clears, `hot` where it fires. Null when the rule is off. */
-export function tempLimits(rules: Rules, machine: string): { high: number; hot: number } | null {
+export function tempLimits(rules: Rules, machine: string): LevelLimits | null {
   if (!rules.temp) return null;
   const { at, clear } = { ...rules.temp, ...rules.temp.machines?.[machine] };
   return { high: clear, hot: at };
+}
+
+/** Where the page colors a Machine's CPU, RAM or disk `high`, and where it reads `hot`. `high` is a fixed visual policy (it never goes above `hot`); `hot` is where the Alert fires, and neither depends on `clear`. */
+export function usageLimits(rules: Rules): MachineLimits['usage'] {
+  const limit = (hot: number) => ({ high: Math.min(HIGH, hot), hot });
+  return { cpu: limit(rules.cpu.at), ram: limit(rules.ram.at), disk: limit(rules.disk.at) };
 }
 
 /** Throws a message naming the first thing wrong with `rules`. */
@@ -167,7 +178,7 @@ function topApps(machine: MachineView, key: 'cpu' | 'ram', show: (value: number)
   return all.filter(a => a.value > 0).sort((a, b) => b.value - a.value).slice(0, 3).map(a => `${a.name} ${show(a.value)}`).join(', ');
 }
 
-const fresh = (): Entry => ({ active: false, delivered: false, outbox: null, gen: 0, latest: null, lastFired: null, since: null, sampleAt: null });
+const fresh = (): Entry => ({ active: false, occurrence: null, delivered: false, outbox: null, gen: 0, latest: null, lastFired: null, since: null, sampleAt: null });
 const text = (v: unknown): (Text & { machine: string }) | null =>
   object(v) && typeof v.title === 'string' && typeof v.body === 'string' && typeof v.machine === 'string' ? { title: v.title, body: v.body, machine: v.machine } : null;
 const time = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
@@ -181,8 +192,10 @@ function restore(state: unknown): AlertsState {
       const gen = typeof e.gen === 'number' && Number.isInteger(e.gen) ? e.gen : 1;
       const o = object(e.outbox) && (e.outbox.kind === 'fire' || e.outbox.kind === 'clear') && time(e.outbox.first) !== null && time(e.outbox.last) !== null ? text(e.outbox.n) : null;
       const l = object(e.latest) && (e.latest.kind === 'fire' || e.latest.kind === 'clear') ? text(e.latest) : null;
+      const active = e.active === true;
       out.entries[tag] = {
-        active: e.active === true, delivered: e.delivered === true, gen, lastFired: time(e.lastFired), since: time(e.since), sampleAt: time(e.sampleAt),
+        // State saved before `occurrence` existed: the newest notification is the best text there is.
+        active, occurrence: active ? text(e.occurrence) ?? l : null, delivered: e.delivered === true, gen, lastFired: time(e.lastFired), since: time(e.since), sampleAt: time(e.sampleAt),
         outbox: o ? { kind: e.outbox.kind, gen: typeof e.outbox.gen === 'number' ? e.outbox.gen : gen, first: e.outbox.first, last: e.outbox.last, n: o } : null,
         latest: l ? { ...l, kind: e.latest.kind, gen: typeof e.latest.gen === 'number' ? e.latest.gen : gen, at: time(e.latest.at) ?? 0 } : null,
       };
@@ -217,6 +230,7 @@ export function createAlertEvaluator(rules: Rules, initial?: unknown) {
   function release(tag: string, machine: string, now: number, message: Text, out: Notification[]) {
     const e = entry(tag);
     e.active = false;
+    e.occurrence = null;
     advance(e, 'clear', { ...message, machine }, now);
     // If nobody has accepted the fire, there is nothing to replace; one still in flight is answered when it lands (see current()).
     if (e.delivered) {
@@ -234,10 +248,11 @@ export function createAlertEvaluator(rules: Rules, initial?: unknown) {
     if (!e.active) {
       if (!trigger) return;
       e.active = true;
+      e.occurrence = { ...fire(), machine };
       if (e.outbox?.kind === 'clear') e.outbox = null; // the new fire replaces it anyway
       if (e.lastFired === null || now - e.lastFired >= cooldownMs) {
         e.lastFired = now;
-        advance(e, 'fire', { ...fire(), machine }, now);
+        advance(e, 'fire', e.occurrence, now);
         e.outbox = { kind: 'fire', gen: e.gen, first: now, last: now, n: e.latest! };
         out.push(note(tag, e.latest!, false, e.gen));
       }
@@ -420,7 +435,15 @@ export function createAlertEvaluator(rules: Rules, initial?: unknown) {
     return Object.entries(s.entries).filter(([, e]) => e.active && e.latest?.kind === 'fire').map(([tag, e]) => note(tag, e.latest!, false, e.latest!.gen));
   }
 
-  return { evaluate, recover, delivered, current, active, state: (): AlertsState => structuredClone(s) };
+  /** What is wrong with the Machine now: every active Alert of it, muted by the cooldown or not, in tag order. */
+  function attention(machine: string): Attention[] {
+    return Object.entries(s.entries)
+      .filter(([, e]) => e.active && e.occurrence?.machine === machine)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([tag, e]) => ({ tag, title: e.occurrence!.title, body: e.occurrence!.body }));
+  }
+
+  return { evaluate, recover, delivered, current, active, attention, state: (): AlertsState => structuredClone(s) };
 }
 
 /** Uses the Dashboard's SQLite connection; close Alerts before closing that connection. */
@@ -436,9 +459,10 @@ export function createAlerts(options: { db: DatabaseSync; dbPath: string; rules:
   const row = db.prepare('SELECT state FROM alert_state WHERE id=1').get() as { state: string } | undefined;
   let initial: unknown = null;
   try { initial = row ? JSON.parse(row.state) : null; } catch {}
-  const evaluator = vapid ? createAlertEvaluator(options.rules, initial) : null;
-  evaluator?.recover(startedAt);
-  let saved = evaluator ? JSON.stringify(evaluator.state()) : '';
+  // The evaluator runs without keys too: the banner needs it, only delivery is off.
+  const evaluator = createAlertEvaluator(options.rules, initial);
+  evaluator.recover(startedAt);
+  let saved = JSON.stringify(evaluator.state());
   let closed = false;
   const inflight = new Set<Promise<unknown>>();
   function track(work: Promise<unknown>) {
@@ -446,7 +470,7 @@ export function createAlerts(options: { db: DatabaseSync; dbPath: string; rules:
     inflight.add(p);
   }
   function persist() {
-    if (!evaluator || closed) return;
+    if (closed) return;
     const json = JSON.stringify(evaluator.state());
     if (json !== saved) { db.prepare('INSERT OR REPLACE INTO alert_state VALUES (1,?)').run(json); saved = json; }
   }
@@ -465,29 +489,31 @@ export function createAlerts(options: { db: DatabaseSync; dbPath: string; rules:
       const results = await Promise.all(subs.map(sub => push(sub, n)));
       if (closed) return;
       results.forEach((r, i) => settle(subs[i], n, r));
-      evaluator!.delivered(n, results.some(r => r.ok), clock());
+      evaluator.delivered(n, results.some(r => r.ok), clock());
       // A catch-up can land after its Alert cleared: bring that device up to date.
       await Promise.all(results.map(async (r, i) => {
-        const next = r.ok ? evaluator!.current(n) : null;
+        const next = r.ok ? evaluator.current(n) : null;
         if (!next) return;
         const again = await push(subs[i], next);
         if (closed) return;
         settle(subs[i], next, again);
-        evaluator!.delivered(next, again.ok, clock());
+        evaluator.delivered(next, again.ok, clock());
       }));
     }));
     persist();
   }
-  function observe(machines: MachineView[], now: number, completedDisconnects: { machine: string; vpn: string }[] = []) {
-    if (!evaluator || closed) return;
+  function observe(machines: MachineView[], now: number, completedDisconnects: { machine: string; vpn: string }[] = []): string[] {
+    if (closed) return [];
+    const before = new Map(machines.map(m => [m.id, JSON.stringify(evaluator.attention(m.id))]));
     try {
       const list = evaluator.evaluate(machines, now, { completedDisconnects, observedFrom: startedAt });
       persist();
-      if (list.length) track(deliver(list));
-    } catch (error) { console.error('Alerts:', error); }
+      if (vapid && list.length) track(deliver(list));
+      return machines.filter(m => before.get(m.id) !== JSON.stringify(evaluator.attention(m.id))).map(m => m.id);
+    } catch (error) { console.error('Alerts:', error); return []; }
   }
   function subscribe(value: unknown, now: number): boolean {
-    if (!evaluator || closed || !validSubscription(value)) return false;
+    if (!vapid || closed || !validSubscription(value)) return false;
     const sub = { endpoint: value.endpoint, keys: { p256dh: value.keys.p256dh, auth: value.keys.auth } };
     db.prepare('INSERT OR REPLACE INTO subscriptions VALUES (?,?,?)').run(sub.endpoint, JSON.stringify(sub.keys), now);
     const known = evaluator.active();
@@ -505,7 +531,9 @@ export function createAlerts(options: { db: DatabaseSync; dbPath: string; rules:
   return {
     publicKey: vapid?.publicKey ?? null,
     observe, subscribe, unsubscribe, sendTest,
-    recover(now: number) { if (!closed) evaluator?.recover(now); },
+    recover(now: number) { if (!closed) evaluator.recover(now); },
+    /** The Machine's active Alerts as of the last `observe`, whether or not anything can be delivered. */
+    attention: (machine: string): Attention[] => evaluator.attention(machine),
     async idle() { while (inflight.size) await Promise.allSettled([...inflight]); },
     close() { closed = true; },
   };

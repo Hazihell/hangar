@@ -10,7 +10,7 @@ import type { Apps } from "@/lib/types"
  * the reports that follow (see `quitRuns`). Each send is a run with its own
  * id; an answer only counts while its run is the Subject's latest.
  */
-export function useQuits(machineId: string, apps: Apps | null) {
+export function useQuits(machineId: string, apps: Apps | null, maxTargets?: number) {
   const latest = useRef(apps)
   useEffect(() => {
     latest.current = apps
@@ -44,7 +44,7 @@ export function useQuits(machineId: string, apps: Apps | null) {
     return () => clearTimeout(timer)
   }, [runs, now])
 
-  const view = useMemo(() => quitRuns(runs, apps, now), [runs, apps, now])
+  const view = useMemo(() => quitRuns(runs, apps, now, maxTargets), [runs, apps, now, maxTargets])
   const quit = (subject: Subject, request: QuitRequest, force: boolean) =>
     command.run({ subject, request, force }, subjectKey(subject))
 

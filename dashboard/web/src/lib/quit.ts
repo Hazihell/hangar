@@ -1,18 +1,19 @@
 import { MachineCommandError, postCommand } from "@/lib/machine-command"
 import type { Where } from "@/lib/types"
 
-/** One Process to Quit, as `POST /api/machines/:id/quit` takes it. */
-export type QuitTarget = { pid: number; started: string; where?: "wsl" }
+import type {
+  QuitResponse,
+  QuitSelection as QuitRequest,
+  QuitResult,
+  QuitTarget,
+} from "@/lib/types"
 
-export type QuitOutcome = "sent" | "gone" | "changed" | "protected" | "failed"
-
-export type QuitResult = { pid: number; result: QuitOutcome; message?: string; started?: string; where?: "wsl" }
-
-/**
- * What to Quit: Processes by PID, or an App by name, which the server resolves
- * to all of its Processes that may be quit (the page only sees 20 per App).
- */
-export type QuitRequest = { targets: QuitTarget[] } | { app: string; where?: "wsl" }
+export type {
+  QuitTarget,
+  QuitResult,
+  QuitOutcome,
+  QuitSelection as QuitRequest,
+} from "@/lib/types"
 
 const REFUSALS: Record<number, string> = {
   400: "The server didn’t accept that request.",
@@ -40,9 +41,7 @@ export async function sendQuit(
       timeout: 15_000,
     }
   )
-  const body = (await res.json().catch(() => null)) as {
-    results?: QuitResult[]
-  } | null
+  const body = (await res.json().catch(() => null)) as QuitResponse | null
   if (Array.isArray(body?.results)) return body.results
   throw new MachineCommandError("The server’s answer couldn’t be read.")
 }

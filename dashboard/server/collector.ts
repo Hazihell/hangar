@@ -152,7 +152,8 @@ export function startCollector(machine: string, intake: (report: unknown) => num
   const sampleProc = os.createSampler(() => logicalCpus);
   try { sampleProc(); } catch (error) { console.error('WSL collector:', error); }
   function launch() {
-    const current = session = { active: true, kill: () => {}, cancelWatchdog: () => {} };
+    const current: NonNullable<typeof session> = { active: true, kill: () => {}, cancelWatchdog: () => {} };
+    session = current;
     let lastValid = time.now(), pending = Promise.resolve();
     function retire() {
       current.active = false;
