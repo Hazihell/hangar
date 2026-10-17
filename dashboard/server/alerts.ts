@@ -1,5 +1,9 @@
-// The Alert rule evaluator. Pure: give it the Machines and the time, get back the notifications to push.
+// Alerts own their rules, durable state and delivery to subscribed browsers.
 import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import type { DatabaseSync } from 'node:sqlite';
+import { generateVapid, loadOrCreateVapid, send, validSubscription } from './push.ts';
+import type { FetchLike, SendResult, Subscription, VapidKeys } from './push.ts';
 
 export type Threshold = { at: number; clear: number };
 /** The CPU's temperature in °C: `machines` replaces `at` and `clear` for a Machine whose chip runs hotter or cooler by design. Absent or `false`: off. */
@@ -188,7 +192,7 @@ function restore(state: unknown): AlertsState {
   return out;
 }
 
-export function createAlerts(rules: Rules, initial?: unknown) {
+export function createAlertEvaluator(rules: Rules, initial?: unknown) {
   const s = restore(initial);
   const cooldownMs = rules.cooldown * 1000;
   let recoveredAt: number | null = null;
@@ -417,4 +421,92 @@ export function createAlerts(rules: Rules, initial?: unknown) {
   }
 
   return { evaluate, recover, delivered, current, active, state: (): AlertsState => structuredClone(s) };
+}
+
+/** Uses the Dashboard's SQLite connection; close Alerts before closing that connection. */
+export function createAlerts(options: { db: DatabaseSync; dbPath: string; rules: Rules; vapid?: string; fetch?: FetchLike; clock: () => number; startedAt: number }) {
+  const { db, clock, startedAt } = options;
+  db.exec(`CREATE TABLE IF NOT EXISTS subscriptions (endpoint TEXT PRIMARY KEY, keys TEXT NOT NULL, created INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS alert_state (id INTEGER PRIMARY KEY CHECK (id = 1), state TEXT NOT NULL);`);
+  // A broken key leaves Alerts off (the endpoints answer 503); replacing it would invalidate every subscription.
+  let vapid: VapidKeys | null = null;
+  try {
+    vapid = options.vapid ? loadOrCreateVapid(options.vapid) : options.dbPath === ':memory:' ? generateVapid() : loadOrCreateVapid(join(dirname(options.dbPath), 'vapid.json'));
+  } catch (error: any) { console.error(`Alerts are off: ${error?.message ?? error}`); }
+  const row = db.prepare('SELECT state FROM alert_state WHERE id=1').get() as { state: string } | undefined;
+  let initial: unknown = null;
+  try { initial = row ? JSON.parse(row.state) : null; } catch {}
+  const evaluator = vapid ? createAlertEvaluator(options.rules, initial) : null;
+  evaluator?.recover(startedAt);
+  let saved = evaluator ? JSON.stringify(evaluator.state()) : '';
+  let closed = false;
+  const inflight = new Set<Promise<unknown>>();
+  function track(work: Promise<unknown>) {
+    const p = work.catch(error => console.error('Alerts:', error)).finally(() => inflight.delete(p));
+    inflight.add(p);
+  }
+  function persist() {
+    if (!evaluator || closed) return;
+    const json = JSON.stringify(evaluator.state());
+    if (json !== saved) { db.prepare('INSERT OR REPLACE INTO alert_state VALUES (1,?)').run(json); saved = json; }
+  }
+  function unsubscribe(endpoint: string) {
+    if (!closed) db.prepare('DELETE FROM subscriptions WHERE endpoint=?').run(endpoint);
+  }
+  const host = (endpoint: string) => { try { return new URL(endpoint).host; } catch { return 'a push service'; } };
+  const push = (sub: Subscription, n: Notification) => send(sub, { title: n.title, body: n.body, tag: n.tag, machine: n.machine, quiet: n.quiet }, { vapid: vapid!, urgency: n.quiet ? 'normal' : 'high', fetch: options.fetch });
+  function settle(sub: Subscription, n: Notification, r: SendResult) {
+    if (r.gone) unsubscribe(sub.endpoint);
+    else if (!r.ok) console.error(`Alerts: ${host(sub.endpoint)} refused "${n.title}": ${r.status || r.error}`);
+  }
+  async function deliver(list: Notification[], to?: Subscription[]) {
+    const subs = to ?? (db.prepare('SELECT endpoint,keys FROM subscriptions ORDER BY created, endpoint').all() as { endpoint: string; keys: string }[]).map(r => ({ endpoint: r.endpoint, keys: JSON.parse(r.keys) }));
+    await Promise.all(list.map(async n => {
+      const results = await Promise.all(subs.map(sub => push(sub, n)));
+      if (closed) return;
+      results.forEach((r, i) => settle(subs[i], n, r));
+      evaluator!.delivered(n, results.some(r => r.ok), clock());
+      // A catch-up can land after its Alert cleared: bring that device up to date.
+      await Promise.all(results.map(async (r, i) => {
+        const next = r.ok ? evaluator!.current(n) : null;
+        if (!next) return;
+        const again = await push(subs[i], next);
+        if (closed) return;
+        settle(subs[i], next, again);
+        evaluator!.delivered(next, again.ok, clock());
+      }));
+    }));
+    persist();
+  }
+  function observe(machines: MachineView[], now: number, completedDisconnects: { machine: string; vpn: string }[] = []) {
+    if (!evaluator || closed) return;
+    try {
+      const list = evaluator.evaluate(machines, now, { completedDisconnects, observedFrom: startedAt });
+      persist();
+      if (list.length) track(deliver(list));
+    } catch (error) { console.error('Alerts:', error); }
+  }
+  function subscribe(value: unknown, now: number): boolean {
+    if (!evaluator || closed || !validSubscription(value)) return false;
+    const sub = { endpoint: value.endpoint, keys: { p256dh: value.keys.p256dh, auth: value.keys.auth } };
+    db.prepare('INSERT OR REPLACE INTO subscriptions VALUES (?,?,?)').run(sub.endpoint, JSON.stringify(sub.keys), now);
+    const known = evaluator.active();
+    if (known.length) track(deliver(known, [sub])); // a new device learns of the Alerts already firing
+    return true;
+  }
+  async function sendTest(endpoint: string) {
+    if (!vapid || closed) return null;
+    const row = db.prepare('SELECT endpoint,keys FROM subscriptions WHERE endpoint=?').get(endpoint) as { endpoint: string; keys: string } | undefined;
+    if (!row) return null;
+    const result = await push({ endpoint: row.endpoint, keys: JSON.parse(row.keys) }, { title: 'Alerts are on for this device', body: '', tag: 'test', machine: '', quiet: false, gen: 0 });
+    if (result.gone) unsubscribe(endpoint);
+    return result;
+  }
+  return {
+    publicKey: vapid?.publicKey ?? null,
+    observe, subscribe, unsubscribe, sendTest,
+    recover(now: number) { if (!closed) evaluator?.recover(now); },
+    async idle() { while (inflight.size) await Promise.allSettled([...inflight]); },
+    close() { closed = true; },
+  };
 }

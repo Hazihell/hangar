@@ -11,7 +11,7 @@ import { createServer } from 'node:http';
 import type { ServerResponse } from 'node:http';
 import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { resolve, extname, sep, dirname, join } from 'node:path';
+import { resolve, extname, sep, join } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Store } from './store.ts';
@@ -19,9 +19,8 @@ import type { Machine } from './store.ts';
 import { validReport, validQuit } from './rules.ts';
 import { startCollector, collectorPids } from './collector.ts';
 import { createAlerts, loadRules, tempLimits } from './alerts.ts';
-import type { Notification, Rules } from './alerts.ts';
-import { generateVapid, loadOrCreateVapid, send, validSubscription } from './push.ts';
-import type { FetchLike, Subscription, VapidKeys } from './push.ts';
+import type { Rules } from './alerts.ts';
+import type { FetchLike } from './push.ts';
 const root = fileURLToPath(new URL('..', import.meta.url));
 let tailnetName = '', tailnetTried = 0;
 function dashboardHosts() {
@@ -61,7 +60,6 @@ export function createDashboard(options: { db: string; t3Db?: string; hangar?: s
   }
   refreshProtection();
   const protectionTimer = setInterval(refreshProtection, 30_000);
-  let closed = false;
   function state(machine: Machine, now: number, event = false, history = true) {
     const value = event ? store.event(machine, now) : store.snapshot(machine, now, history);
     value.vpns = vpn.state(machine.id, value.vpns);
@@ -70,62 +68,13 @@ export function createDashboard(options: { db: string; t3Db?: string; hangar?: s
     return value;
   }
   const vpn = createVpn({ exec, clock, vpns: id => store.vpns(id), online: (machine, now) => store.snapshot(machine, now, false).online, emit: (machine, now) => emit(machine, now), started: now => evaluateAlerts(now) });
-  const power = createPower(exec, clock, (machine, now) => emit(machine, now), () => observeSuspension(clock()), now => { alerts?.recover(now); power.resume(now); });
+  const power = createPower(exec, clock, (machine, now) => emit(machine, now), () => observeSuspension(clock()), now => { alerts.recover(now); power.resume(now); });
   const updates = createUpdates({ machines, exec: options.exec ?? detachedExec, clock, hangar: options.hangar ?? resolve(root, '../bin/hangar'), t3Db: options.t3Db ?? join(process.env.T3CODE_HOME ?? join(homedir(), '.t3'), 'userdata/statev2.sqlite'),
     schedule: options.updateChecks ?? options.collect !== false, kill: options.kill, online: machine => store.snapshot(machine, clock(), false).online, emit: (machine, now) => emit(machine, now) });
-  // Alerts. The VAPID key lives beside the database; if it is broken they stay off (the endpoints answer 503)
-  // rather than replacing it, which would invalidate every subscription.
   const rules = options.rules ?? loadRules(resolve(root, 'alerts.json'));
-  let vapid: VapidKeys | null = null;
-  try {
-    vapid = options.vapid ? loadOrCreateVapid(options.vapid) : options.db === ':memory:' ? generateVapid() : loadOrCreateVapid(join(dirname(options.db), 'vapid.json'));
-  } catch (error: any) { console.error(`Alerts are off: ${error?.message ?? error}`); }
-  const alerts = vapid ? createAlerts(rules, store.alertState()) : null;
-  alerts?.recover(startedAt);
-  let savedAlerts = alerts ? JSON.stringify(alerts.state()) : '';
-  const inflight = new Set<Promise<unknown>>();
-  function track(work: Promise<unknown>) {
-    const p = work.catch(error => console.error('Alerts:', error)).finally(() => inflight.delete(p));
-    inflight.add(p);
-  }
-  function persistAlerts() {
-    if (!alerts || closed) return;
-    const json = JSON.stringify(alerts.state());
-    if (json !== savedAlerts) { store.saveAlertState(json); savedAlerts = json; }
-  }
-  const host = (endpoint: string) => { try { return new URL(endpoint).host; } catch { return 'a push service'; } };
-  const push = (sub: Subscription, n: Notification) => send(sub, { title: n.title, body: n.body, tag: n.tag, machine: n.machine, quiet: n.quiet }, { vapid: vapid!, urgency: n.quiet ? 'normal' : 'high', fetch: options.fetch });
-  function settle(sub: Subscription, n: Notification, r: { ok: boolean; gone: boolean; status: number; error?: string }) {
-    if (r.gone) store.removeSubscription(sub.endpoint);
-    else if (!r.ok) console.error(`Alerts: ${host(sub.endpoint)} refused "${n.title}": ${r.status || r.error}`);
-  }
-  /** Pushes each notification to every subscription (or just `to`), forgets those that are gone, and tells the Alerts who accepted. */
-  async function deliver(list: Notification[], to?: Subscription[]) {
-    const subs = to ?? store.subscriptions();
-    await Promise.all(list.map(async n => {
-      const results = await Promise.all(subs.map(sub => push(sub, n)));
-      if (closed) return;
-      results.forEach((r, i) => settle(subs[i], n, r));
-      alerts!.delivered(n, results.some(r => r.ok), clock());
-      // A push can land after its Alert has moved on (a catch-up that hung while the Alert cleared): bring that device up to date.
-      await Promise.all(results.map(async (r, i) => {
-        const next = r.ok ? alerts!.current(n) : null;
-        if (!next) return;
-        const again = await push(subs[i], next);
-        if (closed) return;
-        settle(subs[i], next, again);
-        alerts!.delivered(next, again.ok, clock());
-      }));
-    }));
-    persistAlerts();
-  }
+  const alerts = createAlerts({ db: store.db, dbPath: options.db, rules, vapid: options.vapid, fetch: options.fetch, clock, startedAt });
   function evaluateAlerts(now: number, completedDisconnects: { machine: string; vpn: string }[] = []) {
-    if (!alerts || closed) return;
-    try {
-      const list = alerts.evaluate(machines.map((m: Machine) => state(m, now, false, false)), now, { completedDisconnects, observedFrom: startedAt });
-      persistAlerts();
-      if (list.length) track(deliver(list));
-    } catch (error) { console.error('Alerts:', error); }
+    alerts.observe(machines.map((m: Machine) => state(m, now, false, false)), now, completedDisconnects);
   }
   const dist = options.dist ?? resolve(root, 'web/dist');
   // Names the page being served, so a tab still running an older one can tell it was rebuilt. Rehashed when index.html changes.
@@ -261,27 +210,20 @@ export function createDashboard(options: { db: string; t3Db?: string; hangar?: s
       if (path === '/api/alerts/key' || path === '/api/alerts/subscriptions' || path === '/api/alerts/test') {
         const allowed = path === '/api/alerts/key' ? ['GET', 'HEAD'] : path === '/api/alerts/test' ? ['POST'] : ['POST', 'DELETE'];
         if (!allowed.includes(req.method!)) { res.writeHead(404).end(); return; }
-        if (!vapid && req.method !== 'DELETE') { res.writeHead(503).end('Alerts are off: the VAPID key file is unusable'); return; }
-        if (path === '/api/alerts/key') { res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ publicKey: vapid!.publicKey })); return; }
+        if (!alerts.publicKey && req.method !== 'DELETE') { res.writeHead(503).end('Alerts are off: the VAPID key file is unusable'); return; }
+        if (path === '/api/alerts/key') { res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ publicKey: alerts.publicKey })); return; }
         if (!/^application\/(?:[\w.+-]+\+)?json(?:\s*;|$)/i.test(req.headers['content-type'] ?? '')) { res.writeHead(400).end(); return; }
         let body = '', size = 0;
         for await (const chunk of req) { size += chunk.length; if (size > 8192) { res.writeHead(400).end(); return; } body += chunk; }
         let value: any; try { value = JSON.parse(body); } catch { res.writeHead(400).end(); return; }
         if (path === '/api/alerts/subscriptions' && req.method === 'POST') {
-          if (!validSubscription(value)) { res.writeHead(400).end(); return; }
-          const sub: Subscription = { endpoint: value.endpoint, keys: { p256dh: value.keys.p256dh, auth: value.keys.auth } };
-          store.addSubscription(sub, clock());
-          res.writeHead(201).end();
-          const known = alerts!.active();
-          if (known.length) track(deliver(known, [sub])); // a new device learns of the Alerts already firing
+          res.writeHead(alerts.subscribe(value, clock()) ? 201 : 400).end();
           return;
         }
         if (value === null || typeof value !== 'object' || typeof value.endpoint !== 'string') { res.writeHead(400).end(); return; }
-        if (path === '/api/alerts/subscriptions') { store.removeSubscription(value.endpoint); res.writeHead(204).end(); return; }
-        const sub = store.subscription(value.endpoint);
-        if (!sub) { res.writeHead(404).end(); return; }
-        const result = await send(sub, { title: 'Alerts are on for this device', body: '', tag: 'test', machine: '', quiet: false }, { vapid: vapid!, urgency: 'high', fetch: options.fetch });
-        if (result.gone) store.removeSubscription(sub.endpoint);
+        if (path === '/api/alerts/subscriptions') { alerts.unsubscribe(value.endpoint); res.writeHead(204).end(); return; }
+        const result = await alerts.sendTest(value.endpoint);
+        if (!result) { res.writeHead(404).end(); return; }
         if (result.ok) res.writeHead(204).end();
         else res.writeHead(502, { 'Content-Type': 'application/json' }).end(JSON.stringify({ status: result.status, ...(result.error ? { error: result.error } : {}) }));
         return;
@@ -313,7 +255,7 @@ export function createDashboard(options: { db: string; t3Db?: string; hangar?: s
   function observeSuspension(now: number) {
     // Check before evaluating reports or command callbacks too: either can run before the interval after resume.
     if (now - lastObservedAt > 35_000) {
-      alerts?.recover(now);
+      alerts.recover(now);
       power.resume(now);
     }
     lastObservedAt = now;
@@ -326,7 +268,7 @@ export function createDashboard(options: { db: string; t3Db?: string; hangar?: s
   const offline = setInterval(tick, 5000);
   const heartbeat = setInterval(() => { for (const stream of streams) stream.write(': heartbeat\n\n'); }, 20_000);
   const stops = options.collect === false ? [] : machines.filter((m: Machine) => m.collector === 'wsl').slice(0, 1).map((m: Machine) => startCollector(m.id, intake));
-  return { server, tick, async idle() { while (inflight.size) await Promise.allSettled([...inflight]); }, async close() { closed = true; power.close(); updates.close(); vpn.close(); clearInterval(protectionTimer); clearInterval(offline); clearInterval(heartbeat); stops.forEach((stop: () => void) => stop()); for (const stream of streams) stream.end(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); store.close(); } };
+  return { server, tick, async idle() { await alerts.idle(); }, async close() { alerts.close(); power.close(); updates.close(); vpn.close(); clearInterval(protectionTimer); clearInterval(offline); clearInterval(heartbeat); stops.forEach((stop: () => void) => stop()); for (const stream of streams) stream.end(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); store.close(); } };
 }
 function statExists(path: string) { try { statSync(path); return true; } catch { return false; } }
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

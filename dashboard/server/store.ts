@@ -5,7 +5,6 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { average, cutoff, minute, online } from './rules.ts';
 import type { Report, Point, Vpn } from './rules.ts';
-import type { Subscription } from './push.ts';
 export type Machine = { id: string; name: string; os: string; collector: string; ssh?: string };
 export class Store {
   db: DatabaseSync;
@@ -20,9 +19,7 @@ export class Store {
     this.db.exec(`PRAGMA journal_mode=WAL;
       CREATE TABLE IF NOT EXISTS latest (machine TEXT PRIMARY KEY, at INTEGER NOT NULL, report TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS history (machine TEXT, t INTEGER, cpu REAL, ram REAL, disk REAL, count INTEGER, temp REAL, tcount INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(machine,t));
-      CREATE TABLE IF NOT EXISTS top_apps (machine TEXT, t INTEGER, sums TEXT NOT NULL, samples INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(machine,t));
-      CREATE TABLE IF NOT EXISTS subscriptions (endpoint TEXT PRIMARY KEY, keys TEXT NOT NULL, created INTEGER NOT NULL);
-      CREATE TABLE IF NOT EXISTS alert_state (id INTEGER PRIMARY KEY CHECK (id = 1), state TEXT NOT NULL);`);
+      CREATE TABLE IF NOT EXISTS top_apps (machine TEXT, t INTEGER, sums TEXT NOT NULL, samples INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(machine,t));`);
     if (!(this.db.prepare('PRAGMA table_info(history)').all() as any[]).some(c => c.name === 'temp')) {
       this.db.exec('ALTER TABLE history ADD COLUMN temp REAL; ALTER TABLE history ADD COLUMN tcount INTEGER NOT NULL DEFAULT 0');
     }
@@ -68,24 +65,6 @@ export class Store {
     const row = this.db.prepare('SELECT report FROM latest WHERE machine=?').get(id) as any;
     return row ? JSON.parse(row.report).vpns ?? [] : [];
   }
-  /** Replaces any subscription with the same endpoint. */
-  addSubscription(sub: Subscription, now: number) {
-    this.db.prepare('INSERT OR REPLACE INTO subscriptions VALUES (?,?,?)').run(sub.endpoint, JSON.stringify(sub.keys), now);
-  }
-  removeSubscription(endpoint: string) { this.db.prepare('DELETE FROM subscriptions WHERE endpoint=?').run(endpoint); }
-  subscriptions(): Subscription[] {
-    return (this.db.prepare('SELECT endpoint,keys FROM subscriptions ORDER BY created, endpoint').all() as any[]).map(r => ({ endpoint: r.endpoint, keys: JSON.parse(r.keys) }));
-  }
-  subscription(endpoint: string): Subscription | null {
-    const r = this.db.prepare('SELECT endpoint,keys FROM subscriptions WHERE endpoint=?').get(endpoint) as any;
-    return r ? { endpoint: r.endpoint, keys: JSON.parse(r.keys) } : null;
-  }
-  /** The Alerts' state as last saved, or null. */
-  alertState(): unknown {
-    const r = this.db.prepare('SELECT state FROM alert_state WHERE id=1').get() as any;
-    try { return r ? JSON.parse(r.state) : null; } catch { return null; }
-  }
-  saveAlertState(json: string) { this.db.prepare('INSERT OR REPLACE INTO alert_state VALUES (1,?)').run(json); }
   snapshot(machine: Machine, now: number, withHistory = true) {
     const latest = this.db.prepare('SELECT at,report FROM latest WHERE machine=?').get(machine.id) as any;
     const { collector, ssh, ...identity } = machine;
