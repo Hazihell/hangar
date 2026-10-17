@@ -1,5 +1,5 @@
 import { PenMark } from "@/components/status"
-import { formatPercent, levelOf, percent } from "@/lib/format"
+import { formatPercent, formatTemp, levelOf, percent, tempLevelOf } from "@/lib/format"
 import type { Machine } from "@/lib/types"
 import { cn } from "@/lib/utils"
 
@@ -9,7 +9,7 @@ type Issue = {
   text: React.ReactNode
 }
 
-/** What needs attention, most important first. High (80 %+) is not an issue. */
+/** What needs attention, most important first. High (80 %+) and warm are not issues. */
 function findIssues(machines: Machine[]): Issue[] {
   const offline: Issue[] = []
   const rest: Issue[] = []
@@ -45,6 +45,18 @@ function findIssues(machines: Machine[]): Issue[] {
         text: (
           <>
             RAM on {m.name} is <span className="font-semibold text-full">{formatPercent(ram)}</span> used.
+          </>
+        ),
+      })
+    }
+    const temp = usage.temps?.cpu
+    if (m.online && temp !== undefined && tempLevelOf(temp, m.tempLimits) === "full") {
+      rest.push({
+        machineId: m.id,
+        kind: "full",
+        text: (
+          <>
+            The CPU on {m.name} is hot, at <span className="font-semibold text-full">{formatTemp(temp)}</span>.
           </>
         ),
       })

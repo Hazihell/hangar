@@ -34,7 +34,7 @@ function clearOfEdges(t: number, now: number, plotWidth: number): boolean {
   return (now - t) * px >= HALF_CLOCK + LABEL_GAP + NOW_LABEL && (t - (now - DAY)) * px >= HALF_CLOCK
 }
 
-export const LABELS: Record<Channel, string> = { cpu: "CPU", ram: "RAM", disk: "Fullest disk" }
+export const LABELS: Record<Channel, string> = { cpu: "CPU", temp: "CPU temperature", ram: "RAM", disk: "Fullest disk" }
 
 /** The plot inside a trace, in px from its box: where time runs. */
 export const PLOT = { left: 1, right: 5, top: 5, bottom: 5, axis: 20 }

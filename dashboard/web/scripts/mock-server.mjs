@@ -9,8 +9,8 @@
 //
 // Port: argv, else MOCK_PORT, else HANGAR_DASHBOARD_PORT, else 4398.
 // --extra (or MOCK_EXTRA=1) adds two Machines that exercise edge states:
-// one that never reported and one with many drives. Both have `apps: null`
-// (the page hides the Apps section).
+// one that never reported and one with many drives and a hot CPU. Both have
+// `apps: null` (the page hides the Apps section).
 // --calm (or MOCK_CALM=1) is the all-is-well case: both Machines Online, no
 // drive nearly full.
 //
@@ -114,6 +114,11 @@ function cpuAt(ms, rand, base, busy) {
   const day = Math.max(0, Math.sin(((hour - 7) / 16) * Math.PI))
   const burst = rand() < 0.08 * day ? 25 + rand() * 45 : 0
   return clamp(base + busy * day + burst + (rand() - 0.5) * 6, 0.5, 100)
+}
+
+// CPU Temperature, °C: an idle floor plus what the load adds, and a little noise.
+function tempOf(cpu, idle, rand, gain = 0.55) {
+  return clamp(idle + cpu * gain + (rand() - 0.5) * 2, 25, 110)
 }
 
 const hash = (s) => {
@@ -363,7 +368,7 @@ function makeMachines(now) {
       ramPct = clamp(ramPct + (rand() - 0.5) * 1.6 + (cpu > 40 ? 0.5 : -0.1), 28, 72)
       const progress = (t - (now - DAY)) / DAY
       const diskD = ((calm ? 1290 : 1690) + 30 * progress) / 1863 * 100
-      history.push({ t: iso(t), cpu: round1(cpu), ram: round1(ramPct), disk: round1(diskD) })
+      history.push({ t: iso(t), cpu: round1(cpu), ram: round1(ramPct), disk: round1(diskD), temp: round1(tempOf(cpu, 38, rand)) })
     }
     const last = history.at(-1)
     machines.push({
@@ -379,7 +384,10 @@ function makeMachines(now) {
         ram: { used: Math.round((last.ram / 100) * ramTotal), total: ramTotal },
         disks,
         services: { t3: true },
+        temps: { cpu: last.temp, gpu: 41 },
       },
+      tempLimits: { high: 75, hot: 85 },
+      tempIdle: 38,
       vpns: [vpn("Steeprock", "connected")],
       power: { actions: ["sleep", "shutdown"], pending: null, error: null },
       history,
@@ -399,7 +407,7 @@ function makeMachines(now) {
       if (t > now - 20 * 60 * MINUTE && t < now - 13 * 60 * MINUTE) continue // asleep: no reports
       const cpu = cpuAt(t, rand, 6, 14)
       ramPct = clamp(ramPct + (rand() - 0.5) * 2, 48, 86)
-      history.push({ t: iso(t), cpu: round1(cpu), ram: round1(ramPct), disk: 61.2 })
+      history.push({ t: iso(t), cpu: round1(cpu), ram: round1(ramPct), disk: 61.2, temp: round1(tempOf(cpu, 46, rand, 0.9)) })
     }
     const last = history.at(-1)
     machines.push({
@@ -412,7 +420,10 @@ function makeMachines(now) {
         cpu: last.cpu,
         ram: { used: Math.round((last.ram / 100) * ramTotal), total: ramTotal },
         disks: [{ name: "Macintosh HD", used: Math.round(0.612 * 460.4 * GB), total: Math.round(460.4 * GB) }],
+        temps: { cpu: last.temp },
       },
+      tempLimits: { high: 95, hot: 105 },
+      tempIdle: 46,
       vpns: [vpn("Steeprock", "connected"), vpn("Office", "disconnected")],
       history,
       rand,
@@ -437,7 +448,7 @@ function makeMachines(now) {
     const rand = noise(23)
     const history = []
     for (let t = minuteStart(now - DAY) + MINUTE; t <= minuteStart(now); t += MINUTE) {
-      history.push({ t: iso(t), cpu: round1(cpuAt(t, rand, 10, 30)), ram: round1(80 + rand() * 6), disk: 87.5 })
+      history.push({ t: iso(t), cpu: round1(cpuAt(t, rand, 10, 30)), ram: round1(80 + rand() * 6), disk: 87.5, temp: round1(80 + rand() * 6) })
     }
     machines.push({
       id: "render-box",
@@ -458,7 +469,10 @@ function makeMachines(now) {
           { name: "G:", used: 12 * GB, total: 238 * GB },
         ],
         services: { t3: false },
+        temps: { cpu: 87 },
       },
+      tempLimits: { high: 75, hot: 85 },
+      tempIdle: 80,
       vpns: [],
       history,
       live: true,
@@ -517,6 +531,7 @@ function view(m, now) {
     online: isOnline(m, now),
     lastSeen: m.lastSeenMs === null ? null : iso(m.lastSeenMs),
     usage: m.usage,
+    tempLimits: m.tempLimits ?? null,
     vpns: m.vpns.map((v) => ({ ...v })),
     apps: appsView(m),
     ...(m.power ? { power: { ...m.power } } : {}),
@@ -529,11 +544,13 @@ function report(m, now) {
   const cpu = round1(clamp(m.usage.cpu * 0.6 + cpuAt(now, m.rand, 4, 22) * 0.4, 0.5, 100))
   m.ramPct = clamp(m.ramPct + (m.rand() - 0.5) * 1.2, 20, 95)
   const ramTotal = m.usage.ram.total
+  const temp = m.usage.temps?.cpu === undefined ? undefined : round1(clamp(m.usage.temps.cpu * 0.7 + tempOf(cpu, m.tempIdle, m.rand) * 0.3, 25, 110))
   m.usage = {
     ...m.usage,
     at: iso(now),
     cpu,
     ram: { used: Math.round((m.ramPct / 100) * ramTotal), total: ramTotal },
+    ...(m.usage.temps ? { temps: { ...m.usage.temps, ...(temp === undefined ? {} : { cpu: temp }) } } : {}),
   }
   m.lastSeenMs = now
   if (m.procs) refreshProcs(m, cpu, now)
@@ -546,8 +563,9 @@ function report(m, now) {
     last.cpu = round1(last.cpu + (cpu - last.cpu) / last.n)
     last.ram = round1(last.ram + (m.ramPct - last.ram) / last.n)
     last.disk = round1(fullest)
+    if (temp !== undefined) last.temp = round1(last.temp == null ? temp : last.temp + (temp - last.temp) / last.n)
   } else {
-    m.history.push({ t, cpu, ram: round1(m.ramPct), disk: round1(fullest), n: 1 })
+    m.history.push({ t, cpu, ram: round1(m.ramPct), disk: round1(fullest), temp: temp ?? null, n: 1 })
   }
   while (m.history.length && Date.parse(m.history[0].t) < now - DAY) m.history.shift()
   const { n: _n, ...minute } = m.history.at(-1)

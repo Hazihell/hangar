@@ -36,6 +36,21 @@ say()  { printf '%s\n' "$*"; }
 WARNED=0 FAILED=0
 
 is_wsl() { grep -qi microsoft /proc/version 2>/dev/null; }
+is_number() { [[ "${1:-}" =~ ^-?[0-9]+(\.[0-9]+)?$ ]]; }
+
+# ── Temperature ───────────────────────────────────────────────────────────────
+# The PC's CPU temperature comes from HWiNFO64, which a logon task starts with admin rights; the Mac's from a helper built here.
+C_DRIVE="${HANGAR_C_DRIVE:-/mnt/c}"   # where WSL mounts C:; tests point it at a stub
+HWINFO_TASK="Hangar HWiNFO"
+MAC_TEMPS="$HOME/.local/state/hangar/temps"
+winps() { "$C_DRIVE/Windows/System32/WindowsPowerShell/v1.0/powershell.exe" -NoProfile -NonInteractive "$@"; }
+hwinfo_task() { "$C_DRIVE/Windows/System32/schtasks.exe" /query /tn "$HWINFO_TASK" >/dev/null 2>&1; }
+hwinfo_cpu() { # the CPU temperature HWiNFO reports to Gadget, found by label as the collector does; nothing if it isn't
+  winps -Command 'try { $v = Get-ItemProperty -Path HKCU:\Software\HWiNFO64\VSB -ErrorAction Stop; $l = @($v.PSObject.Properties | Where-Object { $_.Name -match "^Label\d+$" -and $_.Value -eq "CPU (Tctl/Tdie)" })[0]; if ($l) { $v.("ValueRaw" + $l.Name.Substring(5)) } } catch { }' 2>/dev/null | tr -d '\r'
+}
+gpu_temp() { # the first GPU's temperature; nothing without an NVIDIA driver
+  timeout 5 /usr/lib/wsl/lib/nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader,nounits 2>/dev/null | head -n 1
+}
 
 ini_get() { # ini_get <section> <key> <file>: value of key inside [section]
   tr -d '\r' < "$3" | awk -v sec="$1" -v key="$2" '
@@ -183,6 +198,30 @@ setup_reporter() {
   else bad "Dashboard reporter failed to load"; fi
 }
 
+setup_hwinfo() {
+  say "PC temperature"
+  local exe="$C_DRIVE/Program Files/HWiNFO64/HWiNFO64.EXE" appdata dir script
+  if hwinfo_task; then ok "HWiNFO64 starts at logon"; return; fi
+  if [ ! -f "$exe" ]; then warn "install HWiNFO64 for the PC's CPU temperature, then run 'hangar setup' again"; return; fi
+  appdata="$("$C_DRIVE/Windows/System32/cmd.exe" /c 'echo %LOCALAPPDATA%' 2>/dev/null | tr -d '\r' || true)"
+  dir="$(wslpath "$appdata" 2>/dev/null || true)/hangar"
+  if [ -z "$appdata" ] || ! mkdir -p "$dir" || ! cp "$REPO/dashboard/windows/hwinfo-setup.ps1" "$dir/"; then warn "couldn't copy hwinfo-setup.ps1 to Windows; the PC's CPU temperature isn't set up"; return; fi
+  script="$(wslpath -w "$dir/hwinfo-setup.ps1")"
+  say "Approve the UAC prompt on the PC's screen"
+  if winps -Command "\$p = Start-Process powershell.exe -Verb RunAs -Wait -PassThru -ArgumentList '-NoProfile -ExecutionPolicy Bypass -File \"$script\"'; exit \$p.ExitCode"; then ok "HWiNFO64 set up to start at logon"
+  else warn "HWiNFO64 setup didn't finish (UAC declined?); run 'hangar setup' again and approve the prompt"; fi
+}
+
+setup_temps() {
+  say "Mac temperature"
+  local src="$REPO/dashboard/reporter/temps.swift"
+  if [ -x "$MAC_TEMPS" ] && [ ! "$src" -nt "$MAC_TEMPS" ]; then ok "CPU temperature helper"; return; fi
+  if ! command -v swiftc >/dev/null; then warn "swiftc missing; run 'xcode-select --install' for the Mac's CPU temperature, then 'hangar setup' again"; return; fi
+  mkdir -p "$(dirname "$MAC_TEMPS")"
+  if swiftc -O "$src" -o "$MAC_TEMPS.new" && mv "$MAC_TEMPS.new" "$MAC_TEMPS"; then ok "CPU temperature helper built"
+  else rm -f "$MAC_TEMPS.new"; warn "couldn't build the CPU temperature helper from $src"; fi
+}
+
 # ── setup ─────────────────────────────────────────────────────────────────────
 cmd_setup() {
   say "Linking config into place"
@@ -222,7 +261,8 @@ cmd_setup() {
       bad "$(basename "$dir"): npm ci failed"
     fi
   done
-  if [ "$OS" = Darwin ]; then setup_reporter; fi
+  if [ "$OS" = Darwin ]; then setup_temps; setup_reporter; fi
+  if is_wsl; then setup_hwinfo; fi
   if [ "$FAILED" = 1 ]; then say "${R}Setup finished with errors.${N}"; exit 1; fi
   say "Done. Run 'hangar doctor' to check the whole machine."
 }
@@ -409,6 +449,25 @@ cmd_doctor() {
     local dashboard_url="${HANGAR_DASHBOARD_URL:-https://stormtrooper-linux.taila332e5.ts.net/api/report}"
     if curl -fsS --max-time 5 "${dashboard_url%/api/report}/api/machines" >/dev/null; then ok "Dashboard reachable"
     else bad "Dashboard unreachable"; fi
+  fi
+
+  if is_wsl; then
+    say "Temperature"
+    local cpu gpu
+    if hwinfo_task; then ok "HWiNFO64 starts at logon"
+    else warn "no '$HWINFO_TASK' task; run 'hangar setup' on the PC and approve the UAC prompt"; fi
+    cpu="$(hwinfo_cpu || true)"
+    if is_number "$cpu"; then ok "CPU $cpu °C from HWiNFO64"
+    else warn "HWiNFO64 reports no CPU temperature; in HWiNFO, Configure Sensors → HWiNFO Gadget → tick Report value in Gadget for CPU (Tctl/Tdie)"; fi
+    gpu="$(gpu_temp || true)"
+    if is_number "$gpu"; then ok "GPU $gpu °C from nvidia-smi"
+    else warn "nvidia-smi gives no GPU temperature; install the NVIDIA driver on the PC"; fi
+  elif [ "$OS" = Darwin ]; then
+    say "Temperature"
+    local temp
+    temp="$("$MAC_TEMPS" 2>/dev/null || true)"
+    if is_number "$temp"; then ok "CPU $temp °C"
+    else warn "no CPU temperature; run 'hangar setup'"; fi
   fi
 
   say ""
@@ -793,9 +852,10 @@ cmd_help() {
   cat <<EOF
 hangar: keep this machine's agent setup in step with $REPO
 
-  setup     link config, install skill dependencies; on macOS, load the Dashboard reporter
+  setup     link config, install skill dependencies; on macOS, build the temperature helper and load the Dashboard reporter;
+            on the PC, set up HWiNFO64 for the CPU temperature (one UAC prompt)
   sync      commit this machine's changes, pull the other machine's, push, apply
-  doctor    check links, PATH, T3 service, browser, WSL and Dashboard
+  doctor    check links, PATH, T3 service, browser, WSL, Dashboard and temperature
   update    update tools and skills; rebuild and restart Dashboard on Linux
             'update <id>...' updates just those: t3 claude codex gh tea hangar
   outdated  list tools with a newer version; '--json' is what the Dashboard reads

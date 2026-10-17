@@ -15,6 +15,10 @@ parse_ram() {
 parse_disk() {
   awk 'NR==2 && $2>0 { printf "%.0f %.0f\n", ($2-$4)*1024, $2*1024; found=1 } END { if (!found) exit 1 }'
 }
+# The CPU temperature helper (temps.swift, built by `hangar setup`) prints one number.
+parse_temp() {
+  awk 'NR==1 && $0 ~ /^[0-9]+([.][0-9]+)?$/ { print; found=1 } END { if (!found) exit 1 }'
+}
 parse_vpns() {
   awk '
     function json(s, out, i, c) {
@@ -106,7 +110,7 @@ parse_processes() {
     }'
 }
 report_once() {
-  local cpu used total disk disk_used disk_total machine error vpns vpn_field='' process_field='' processes tree cores collector_uid status=0
+  local cpu used total disk disk_used disk_total machine error vpns vpn_field='' process_field='' temp temp_field='' temps="${HANGAR_TEMPS:-$HOME/.local/state/hangar/temps}" processes tree cores collector_uid status=0
   cpu=$(top -l 2 -n 0 -s 10 | parse_cpu) || return
   used=$(vm_stat | parse_ram) || return
   total=$(sysctl -n hw.memsize) || return
@@ -119,6 +123,7 @@ report_once() {
     vpns=$(printf '%s\n' "$vpns" | parse_vpns)
     vpn_field=",\"vpns\":$vpns"
   fi
+  if [ -x "$temps" ] && temp=$("$temps" 2>/dev/null | parse_temp); then temp_field=",\"temps\":{\"cpu\":$temp}"; fi
   # Fail closed for Quit if ancestry cannot be collected. Keep the prior list
   # when any collection command fails instead of reporting an empty snapshot.
   if processes=$(LC_ALL=C ps -axo pid=,uid=,%cpu=,rss=,lstart=,comm= 2>/dev/null) &&
@@ -128,7 +133,7 @@ report_once() {
     process_field=",\"processes\":$processes,\"reporterPid\":$$"
   fi
   error=$(curl -fsS -o /dev/null -w '%{http_code}' --connect-timeout 3 --max-time 5 -H 'Content-Type: application/json' \
-    -d "{\"machine\":\"$machine\",\"cpu\":$cpu,\"ram\":{\"used\":$used,\"total\":$total},\"disks\":[{\"name\":\"Macintosh HD\",\"used\":$disk_used,\"total\":$disk_total}]$vpn_field$process_field}" \
+    -d "{\"machine\":\"$machine\",\"cpu\":$cpu,\"ram\":{\"used\":$used,\"total\":$total},\"disks\":[{\"name\":\"Macintosh HD\",\"used\":$disk_used,\"total\":$disk_total}]$temp_field$vpn_field$process_field}" \
     "${HANGAR_DASHBOARD_URL:-https://stormtrooper-linux.taila332e5.ts.net/api/report}" 2>&1) || status=$?
   [ "$status" = 0 ] && [[ "$error" == 2[0-9][0-9] ]] || { printf 'Reporter: %s\n' "$(printf '%s' "$error" | tr '\r\n' '  ')" >&2; return 1; }
 }

@@ -16,7 +16,7 @@ One person, Roger, who runs coding agents on his own computers. He opens the Das
 
 ## Product Purpose
 
-Hangar keeps every computer that runs Roger's coding agents set up the same way. The Dashboard is the page that shows every Machine: Online or Offline, its current Usage (CPU, RAM, every disk) and its 24 h History, its VPNs, and its Apps. Success: a glance tells him all is well, and the one thing that is not well (a Machine Offline, a disk nearly full, the T3 service stopped) stands out without him reading. When something did go wrong, two more questions follow, and the page answers them on demand rather than up front: what is using the Machine right now (Apps, Quit), and what caused that spike hours ago (Top Apps of a History minute). Alerts reach his phone when he isn't looking.
+Hangar keeps every computer that runs Roger's coding agents set up the same way. The Dashboard is the page that shows every Machine: Online or Offline, its current Usage (CPU, RAM, every disk), its Temperature and its 24 h History, its VPNs, and its Apps. Success: a glance tells him all is well, and the one thing that is not well (a Machine Offline, a disk nearly full, the T3 service stopped) stands out without him reading. When something did go wrong, two more questions follow, and the page answers them on demand rather than up front: what is using the Machine right now (Apps, Quit), and what caused that spike hours ago (Top Apps of a History minute). Alerts reach his phone when he isn't looking.
 
 ## Operating Context
 
@@ -26,8 +26,8 @@ Hangar keeps every computer that runs Roger's coding agents set up the same way.
 
 ## Capabilities and Constraints
 
-- Data contract: `dashboard/API.md`. A Machine is Online when its latest report arrived less than 30 s ago. History is one point per minute, 24 h, with cpu, ram and fullest-disk percents.
-- Terminology from `GLOSSARY.md`: Machine, Usage, Online, Offline, Last seen, History, VPN, Dashboard, Process, App, Top Apps, Quit, Force quit, Alert. Avoid: host, node, device, box, server (for a Machine); stats, metrics, load, health; up/down/on/off/running/asleep; kill, terminate (say Quit); task, job (say Process); culprits, offenders (say Top Apps); alarm, warning (say Alert).
+- Data contract: `dashboard/API.md`. A Machine is Online when its latest report arrived less than 30 s ago. History is one point per minute, 24 h, with cpu, ram and fullest-disk percents and the CPU Temperature.
+- Terminology from `GLOSSARY.md`: Machine, Usage, Temperature, Online, Offline, Last seen, History, VPN, Dashboard, Process, App, Top Apps, Quit, Force quit, Alert. Avoid: host, node, device, box, server (for a Machine); stats, metrics, load, health; up/down/on/off/running/asleep; kill, terminate (say Quit); task, job (say Process); culprits, offenders (say Top Apps); alarm, warning (say Alert).
 - Mostly display. The actions are: connecting or disconnecting a Machine's VPNs (disconnecting asks first); Quit for Apps and Processes the Dashboard may quit, and Force quit when Quit hasn't worked (both always ask); turning Alerts on or off for this browser; updating Claude Code, Codex, T3 Code, gh, tea and Hangar on each Machine (each asks first; T3's lists the agent threads it would interrupt); and putting the PC to Sleep or Shutting it down (both always ask, because the Dashboard runs on it and goes with it until it's woken with Alexa).
 - Every App lists at most 20 of its Processes; quitting an App goes to the server by name, which quits all of its Processes that may be quit.
 - Alerts are Web Push through the service worker (`public/sw.js`, scope `/`, registered on every load). Its only cache is `offline.html`, shown when a page load can't reach the server at all; it never caches the Dashboard or `/api/*`. Push needs a secure context: the tailnet `https://` address, or `http://127.0.0.1` / `localhost` in development. On iOS it needs the page added to the Home Screen.

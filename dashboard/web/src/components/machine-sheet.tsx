@@ -12,13 +12,15 @@ import {
   formatAbsolute,
   formatPercent,
   formatRelative,
+  formatTemp,
   formatUsedOfTotal,
   fullestDisk,
   levelOf,
   percent,
+  tempLevelOf,
   type Level,
 } from "@/lib/format"
-import { toTrace, type TracePoint } from "@/lib/history"
+import { hasTemp, toTrace, type TracePoint } from "@/lib/history"
 import { bucketsOf, type Bucket } from "@/lib/minutes"
 import type { Channel, Disk, Machine, PowerAction } from "@/lib/types"
 import { cn } from "@/lib/utils"
@@ -28,6 +30,7 @@ const OS_NAMES: Record<string, string> = { windows: "Windows", macos: "macOS", l
 
 /** Said in words as well as color. */
 const FLAGS: Record<Level, string | undefined> = { ok: undefined, high: "high", full: "nearly full" }
+const TEMP_FLAGS: Record<Level, string | undefined> = { ok: undefined, high: "warm", full: "hot" }
 
 const LEVEL_TEXT: Record<Level, string> = {
   ok: "",
@@ -35,7 +38,7 @@ const LEVEL_TEXT: Record<Level, string> = {
   full: "text-full",
 }
 
-/** Shared by a sheet's three traces: they run on one time axis. */
+/** Shared by a sheet's traces: they run on one time axis. */
 type Scrub = {
   buckets: Bucket[]
   hover: Mark | null
@@ -45,7 +48,7 @@ type Scrub = {
   setPin: (mark: Mark | null) => void
 }
 
-/** One Machine as a recorder sheet: status, three channels, drives, services, VPNs, Apps. */
+/** One Machine as a recorder sheet: status, channels, drives, services, VPNs, Apps. */
 export function MachineSheet({
   machine,
   now,
@@ -160,6 +163,16 @@ export function MachineSheet({
               lifted={!online}
               scrub={scrub}
             />
+            {(usage.temps?.cpu !== undefined || usage.temps?.gpu !== undefined || hasTemp(machine.history)) && (
+              <TempChannel
+                temps={usage.temps}
+                limits={machine.tempLimits}
+                points={points}
+                now={now}
+                lifted={!online}
+                scrub={scrub}
+              />
+            )}
             <ChannelRow
               channel="ram"
               label="RAM"
@@ -215,6 +228,7 @@ function ChannelRow({
   label,
   value,
   level = levelOf(value),
+  reading = formatPercent(value),
   detail,
   flag,
   points,
@@ -227,6 +241,8 @@ function ChannelRow({
   label: string
   value: number
   level?: Level
+  /** What the big number says; a percent unless given. */
+  reading?: string
   detail?: React.ReactNode
   /** A short red note under the detail, e.g. "nearly full". */
   flag?: string
@@ -246,7 +262,7 @@ function ChannelRow({
             !lifted && LEVEL_TEXT[level]
           )}
         >
-          {formatPercent(value)}
+          {reading}
         </span>
         {detail && <span className="mt-0.5 truncate text-[0.8125rem] text-muted-foreground tnum">{detail}</span>}
         {flag && <span className={cn("text-[0.8125rem] font-medium", LEVEL_TEXT[level])}>{flag}</span>}
@@ -274,6 +290,60 @@ function ChannelRow({
         />
       </Trace>
     </div>
+  )
+}
+
+/**
+ * The CPU's Temperature, on the same paper: rows every 25 °C. The PC adds its
+ * GPU as a detail. A Machine whose sensors stopped answering keeps its trace
+ * and says so instead of a number.
+ */
+function TempChannel({
+  temps,
+  limits,
+  points,
+  now,
+  lifted,
+  scrub,
+}: {
+  temps: { cpu?: number; gpu?: number } | undefined
+  limits: Machine["tempLimits"]
+  points: TracePoint[]
+  now: number
+  lifted: boolean
+  scrub: Scrub
+}) {
+  const cpu = temps?.cpu
+  const level = cpu === undefined ? "ok" : tempLevelOf(cpu, limits)
+  const gpu = temps?.gpu === undefined ? null : `GPU ${formatTemp(temps.gpu)}`
+  return (
+    <ChannelRow
+      channel="temp"
+      label="Temperature"
+      value={cpu ?? 0}
+      level={level}
+      reading={cpu === undefined ? "—" : formatTemp(cpu)}
+      detail={
+        cpu === undefined ? (
+          <>
+            Not reported
+            {gpu && (
+              <>
+                <br />
+                {gpu}
+              </>
+            )}
+          </>
+        ) : (
+          (gpu ?? undefined)
+        )
+      }
+      flag={lifted ? undefined : TEMP_FLAGS[level]}
+      points={points}
+      now={now}
+      lifted={lifted}
+      scrub={scrub}
+    />
   )
 }
 

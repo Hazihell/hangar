@@ -71,12 +71,14 @@ Shows each Machine's Usage, whether it is Online, when it was last seen and its 
 
 The PC collects Windows Usage from WSL; the Mac sends a report every ten seconds. Machine names live in `dashboard/machines.json`; the contract is in `dashboard/API.md`. Reports and History stay in `~/.local/state/hangar/dashboard.db`. Override the server port or database with `HANGAR_DASHBOARD_PORT` and `HANGAR_DASHBOARD_DB`. The Mac reporter accepts `HANGAR_MACHINE` and `HANGAR_DASHBOARD_URL` (the full `/api/report` URL); set these in the launchd plist's `EnvironmentVariables` when needed.
 
+The Dashboard shows each Machine's CPU Temperature (and the PC's GPU's). The PC reads it from HWiNFO64, which must run from the "Hangar HWiNFO" logon task with Gadget reporting ticked for CPU (Tctl/Tdie); install HWiNFO64, then `hangar setup` on the PC creates the task and the setting, with one UAC prompt on its screen. The Mac's helper is compiled by `hangar setup` (needs Xcode's command line tools), and `hangar doctor` checks both.
+
 The Dashboard lists OS-managed VPNs (excluding Tailscale) and can connect or disconnect each one. Mac VPN control requires Remote Login enabled and the PC user’s SSH key in the Mac user’s `authorized_keys`; `hangar doctor` checks this connection.
 
 The Dashboard lists Apps and their Processes, keeps Top Apps for each History minute, and can Quit your unprotected Processes or Force quit them when needed.
 
 The Dashboard checks each Machine for newer versions of T3 Code, Claude Code, Codex, gh, tea and Hangar itself (`hangar outdated`, every 6 hours) and can run any of those Updates (`hangar update <id>`); the Mac is reached over the same SSH as its VPNs and needs a `hangar` that has `outdated`, so run `hangar sync` there after this lands. Skills stay with `hangar update` in a terminal.
 
-The Dashboard sends Alerts as browser push notifications for full disks, sustained high CPU or RAM, dropped VPNs, a stopped T3 service and an Offline PC; rules are in `dashboard/alerts.json`, and the VAPID key sits beside the database as `vapid.json`.
+The Dashboard sends Alerts as browser push notifications for full disks, sustained high CPU or RAM, a CPU that stays too hot, dropped VPNs, a stopped T3 service and an Offline PC; rules are in `dashboard/alerts.json`, and the VAPID key sits beside the database as `vapid.json`.
 
 Run `npm test --prefix dashboard/server` and `dashboard/reporter/parser-tests.sh` to check the server and Mac parsers. The server needs no npm dependencies or build step.

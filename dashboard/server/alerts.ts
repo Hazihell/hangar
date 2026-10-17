@@ -2,10 +2,13 @@
 import { readFileSync } from 'node:fs';
 
 export type Threshold = { at: number; clear: number };
+/** The CPU's temperature in °C: `machines` replaces `at` and `clear` for a Machine whose chip runs hotter or cooler by design. Absent or `false`: off. */
+export type TempRule = Threshold & { for: number; machines?: Record<string, Partial<Threshold>> };
 export type Rules = {
   disk: Threshold;
   cpu: Threshold & { for: number };
   ram: Threshold & { for: number };
+  temp?: TempRule | false;
   offline: { for: number; machines: string[] };
   vpn: boolean;
   t3: boolean;
@@ -17,6 +20,8 @@ export const DEFAULT_RULES: Rules = {
   disk: { at: 90, clear: 85 },
   cpu: { at: 90, clear: 80, for: 300 },
   ram: { at: 90, clear: 85, for: 300 },
+  // The Ryzen 7 5700X3D throttles at 89 °C; the fanless M4 runs about 100 °C under load by design.
+  temp: { at: 85, clear: 75, for: 300, machines: { 'rogers-macbook-air': { at: 105, clear: 95 } } },
   offline: { for: 120, machines: ['stormtrooper'] },
   vpn: true,
   t3: true,
@@ -36,6 +41,7 @@ export type MachineView = {
     ram: { used: number; total: number };
     disks: { name: string; used: number; total: number }[];
     services?: Record<string, boolean>;
+    temps?: { cpu?: number; gpu?: number };
   } | null;
   vpns?: { name: string; status: string; pending?: { action: string } | null }[];
   apps?: { list: AppView[] } | null;
@@ -56,7 +62,7 @@ type Latest = Msg & { kind: 'fire' | 'clear'; gen: number; at: number };
  * - `delivered`: a device has accepted its fire notification and no clear has replaced it yet.
  * - `outbox`: the fire or clear notification not yet accepted by any subscription.
  * - `gen`, `latest`: the generation counter and the newest notification, so a late acknowledgement of an older one can be answered with it, and a new device can be told of an Alert that is firing.
- * - `since`/`sampleAt`: start and latest sample of the CPU/RAM streak, or when an Offline Machine's clock started.
+ * - `since`/`sampleAt`: start and latest sample of the CPU/RAM/temperature streak, or when an Offline Machine's clock started.
  */
 type Entry = { active: boolean; delivered: boolean; outbox: Outbox | null; gen: number; latest: Latest | null; lastFired: number | null; since: number | null; sampleAt: number | null };
 /** `vpns` remembers the VPNs last seen `connected` (and not being disconnected on purpose), by tag. */
@@ -80,8 +86,18 @@ const ONLINE_FOR = 30_000;
 const object = (v: unknown): v is Record<string, any> => v !== null && typeof v === 'object' && !Array.isArray(v);
 const num = (v: unknown, min: number, max: number): v is number => typeof v === 'number' && Number.isFinite(v) && v >= min && v <= max;
 
-function validThreshold(v: unknown, sustained: boolean): boolean {
-  return object(v) && num(v.at, 1, 100) && num(v.clear, 0, 100) && v.clear < v.at && (!sustained || num(v.for, 0, 86_400));
+function validThreshold(v: unknown, sustained: boolean, max = 100): boolean {
+  return object(v) && num(v.at, 1, max) && num(v.clear, 0, max) && v.clear < v.at && (!sustained || num(v.for, 0, 86_400));
+}
+
+const validTemp = (v: any) => validThreshold(v, true, 150) && (v.machines === undefined || (object(v.machines) &&
+  Object.values(v.machines).every(o => object(o) && Object.keys(o).every(k => k === 'at' || k === 'clear') && validThreshold({ ...v, ...o }, true, 150))));
+
+/** What the page colors a Machine's CPU temperature by: `high` is where it clears, `hot` where it fires. Null when the rule is off. */
+export function tempLimits(rules: Rules, machine: string): { high: number; hot: number } | null {
+  if (!rules.temp) return null;
+  const { at, clear } = { ...rules.temp, ...rules.temp.machines?.[machine] };
+  return { high: clear, hot: at };
 }
 
 /** Throws a message naming the first thing wrong with `rules`. */
@@ -90,6 +106,7 @@ export function validateRules(rules: unknown): asserts rules is Rules {
   if (!validThreshold(rules.disk, false)) throw new Error('disk needs at (1-100) and clear (below at)');
   if (!validThreshold(rules.cpu, true)) throw new Error('cpu needs at, clear (below at) and for (seconds)');
   if (!validThreshold(rules.ram, true)) throw new Error('ram needs at, clear (below at) and for (seconds)');
+  if (rules.temp !== undefined && rules.temp !== false && !validTemp(rules.temp)) throw new Error('temp needs at (1-150), clear (below at) and for (seconds), and machines may replace at and clear');
   if (!object(rules.offline) || !num(rules.offline.for, 0, 604_800) || !Array.isArray(rules.offline.machines) || !rules.offline.machines.every((m: unknown) => typeof m === 'string')) {
     throw new Error('offline needs for (seconds) and machines (ids)');
   }
@@ -116,6 +133,10 @@ const MiB = 1024 ** 2, GiB = 1024 ** 3, TiB = 1024 ** 4;
 export function formatPercent(value: number): string {
   if (value > 0 && value < 1) return `<1${NNBSP}%`;
   return `${Math.round(value)}${NNBSP}%`;
+}
+
+export function formatTemp(value: number): string {
+  return `${Math.round(value)}${NNBSP}°C`;
 }
 
 export function formatBytes(bytes: number): string {
@@ -227,18 +248,23 @@ export function createAlerts(rules: Rules, initial?: unknown) {
     }
   }
 
+  /** Extends `e`'s streak of reports at or above the threshold with this one, or ends it. */
+  function streak(e: Entry, usage: { at?: string }, high: boolean, now: number) {
+    if (high) {
+      const parsed = Date.parse(usage.at ?? '');
+      const at = Math.max(Number.isFinite(parsed) && parsed <= now ? parsed : now, recoveredAt ?? 0);
+      if (e.since === null || e.sampleAt === null || at - e.sampleAt > MAX_GAP) e.since = at;
+      e.sampleAt = Math.max(at, e.sampleAt ?? at);
+    } else { e.since = null; e.sampleAt = null; }
+  }
+
   function sustained(kind: 'cpu' | 'ram', m: MachineView, now: number, out: Notification[]) {
     const rule = rules[kind];
     const usage = m.usage!;
     const value = kind === 'cpu' ? usage.cpu : (usage.ram.used / usage.ram.total) * 100;
     const tag = `${m.id}:${kind}`;
     const e = entry(tag);
-    if (value >= rule.at) {
-      const parsed = Date.parse(usage.at ?? '');
-      const at = Math.max(Number.isFinite(parsed) && parsed <= now ? parsed : now, recoveredAt ?? 0);
-      if (e.since === null || e.sampleAt === null || at - e.sampleAt > MAX_GAP) e.since = at;
-      e.sampleAt = Math.max(at, e.sampleAt ?? at);
-    } else { e.since = null; e.sampleAt = null; }
+    streak(e, usage, value >= rule.at, now);
     const label = kind === 'cpu' ? 'CPU' : 'RAM';
     const trigger = e.since !== null && now - e.since >= rule.for * 1000;
     step(tag, m.id, now, trigger, value < rule.clear,
@@ -247,6 +273,30 @@ export function createAlerts(rules: Rules, initial?: unknown) {
         return { title: `${m.name} ${label} high`, body: `${formatPercent(value)} for ${formatSeconds(rule.for)}${apps ? `: ${apps}` : ''}` };
       },
       () => ({ title: `${m.name} ${label} back to normal`, body: `Now ${formatPercent(value)}` }), out);
+  }
+
+  function temperature(rule: TempRule, m: MachineView, now: number, out: Notification[]) {
+    const usage = m.usage!;
+    const value = usage.temps?.cpu;
+    const tag = `${m.id}:temp`;
+    if (value === undefined) {
+      // Online but no reading: the streak means nothing, and an Alert can't clear by itself.
+      const e = s.entries[tag];
+      if (!e) return;
+      e.since = null; e.sampleAt = null;
+      if (e.active) release(tag, m.id, now, { title: `CPU temperature on ${m.name} is no longer reported`, body: '' }, out);
+      return;
+    }
+    const { at, clear } = { ...rule, ...rule.machines?.[m.id] };
+    const e = entry(tag);
+    streak(e, usage, value >= at, now);
+    const trigger = e.since !== null && now - e.since >= rule.for * 1000;
+    step(tag, m.id, now, trigger, value < clear,
+      () => {
+        const apps = topApps(m, 'cpu', formatPercent);
+        return { title: `${m.name} CPU hot`, body: `${formatTemp(value)} for ${formatSeconds(rule.for)}${apps ? `: ${apps}` : ''}` };
+      },
+      () => ({ title: `${m.name} CPU temperature back to normal`, body: `Now ${formatTemp(value)}` }), out);
   }
 
   function evaluate(machines: MachineView[], now: number, ctx: Context = {}): Notification[] {
@@ -271,7 +321,7 @@ export function createAlerts(rules: Rules, initial?: unknown) {
       const usage = m.usage;
       if (!m.online || !usage) {
         // Stale figures prove nothing, and a gap breaks "every report for N seconds".
-        if (!m.online) for (const kind of ['cpu', 'ram']) { const e = s.entries[`${m.id}:${kind}`]; if (e) { e.since = null; e.sampleAt = null; } }
+        if (!m.online) for (const kind of ['cpu', 'ram', 'temp']) { const e = s.entries[`${m.id}:${kind}`]; if (e) { e.since = null; e.sampleAt = null; } }
         continue;
       }
 
@@ -288,6 +338,7 @@ export function createAlerts(rules: Rules, initial?: unknown) {
 
       sustained('cpu', m, now, out);
       sustained('ram', m, now, out);
+      if (rules.temp) temperature(rules.temp, m, now, out);
 
       if (rules.t3 && typeof usage.services?.t3 === 'boolean') {
         const running = usage.services.t3;

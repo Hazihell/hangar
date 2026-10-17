@@ -50,6 +50,19 @@ export function levelOf(value: number): Level {
   return "ok"
 }
 
+export function formatTemp(celsius: number): string {
+  return `${Math.round(celsius)}${NNBSP}°C`
+}
+
+/** How hot a Temperature reads against the Machine's limits: like a percent's level, by what formatTemp shows. */
+export function tempLevelOf(celsius: number, limits: { high: number; hot: number } | null | undefined): Level {
+  if (!limits) return "ok"
+  const shown = Math.round(celsius)
+  if (shown >= limits.hot) return "full"
+  if (shown >= limits.high) return "high"
+  return "ok"
+}
+
 export function fullestDisk(disks: Disk[]): Disk | undefined {
   return disks.reduce<Disk | undefined>(
     (best, d) => (!best || percent(d.used, d.total) > percent(best.used, best.total) ? d : best),

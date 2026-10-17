@@ -4,7 +4,7 @@ import { useRef, useState } from "react"
 import { LABELS, PLOT } from "@/components/trace"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
-import { formatClock, formatPercent, formatRam, formatRelative } from "@/lib/format"
+import { formatClock, formatPercent, formatRam, formatRelative, formatTemp } from "@/lib/format"
 import { DAY } from "@/lib/history"
 import { bucketAt, bucketOf, peakOf, useMinute, type Bucket, type Minute } from "@/lib/minutes"
 import type { Channel, MinuteApp } from "@/lib/types"
@@ -12,6 +12,15 @@ import { cn } from "@/lib/utils"
 
 /** A minute picked on one of a sheet's traces. */
 export type Mark = { minute: Minute; channel: Channel }
+
+/** What a trace's hover label calls its channel, where LABELS is too long. */
+const SHORT: Partial<Record<Channel, string>> = { disk: "Disk", temp: "CPU" }
+
+/** A minute's value in a channel, as its reading shows it. */
+function readingOf(minute: Minute, channel: Channel): string {
+  if (channel !== "temp") return formatPercent(minute[channel])
+  return minute.temp == null ? "not reported" : formatTemp(minute.temp)
+}
 
 /** Where a time sits across a trace's plot, 0 to 1. */
 const ratioOf = (t: number, now: number) => Math.min(1, Math.max(0, (t - (now - DAY)) / DAY))
@@ -74,7 +83,7 @@ export function Scrubber({
   }
 
   const valueText = current
-    ? `${formatClock(current.minute.ms)}, ${label} ${formatPercent(current.minute[channel])}`
+    ? `${formatClock(current.minute.ms)}, ${label} ${readingOf(current.minute, channel)}`
     : `${label} History`
 
   return (
@@ -141,7 +150,7 @@ export function Scrubber({
           <span className="tnum">
             <span className="text-muted-foreground">{formatClock(mine.minute.ms)}</span>{" "}
             <span className="font-medium text-foreground">
-              {label === "Fullest disk" ? "Disk" : label} {formatPercent(mine.minute[channel])}
+              {SHORT[channel] ?? label} {readingOf(mine.minute, channel)}
             </span>
           </span>
           {pin?.minute.t !== mine.minute.t && <span className="text-muted-foreground">Click for Top Apps</span>}
@@ -208,7 +217,8 @@ export function MinutePanel({
               <span className="font-normal text-muted-foreground"> · {formatRelative(minute.ms, now)}</span>
             </h3>
             <p className="text-[0.8125rem] text-muted-foreground tnum">
-              CPU {formatPercent(minute.cpu)} · RAM {formatPercent(minute.ram)} that minute
+              CPU {formatPercent(minute.cpu)}
+              {minute.temp != null && ` at ${formatTemp(minute.temp)}`} · RAM {formatPercent(minute.ram)} that minute
             </p>
           </div>
           <Button

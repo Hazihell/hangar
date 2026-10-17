@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createAlerts, DEFAULT_RULES, loadRules, RETRY_EVERY, RETRY_FOR } from './alerts.ts';
+import { createAlerts, DEFAULT_RULES, loadRules, tempLimits, RETRY_EVERY, RETRY_FOR } from './alerts.ts';
 import type { Context, MachineView, Notification, Rules } from './alerts.ts';
 
 const S = 1000, MIN = 60_000;
@@ -11,14 +11,15 @@ const T0 = Date.UTC(2026, 9, 16, 9, 0, 0);
 const iso = (t: number) => new Date(t).toISOString();
 const GB = 1024 ** 3;
 
-function machine(t: number, patch: Partial<MachineView> & { cpu?: number; ramPct?: number; disks?: [string, number][]; t3?: boolean } = {}): MachineView {
-  const { cpu = 10, ramPct = 40, disks = [['C:', 50]], t3, ...rest } = patch;
+function machine(t: number, patch: Partial<MachineView> & { cpu?: number; ramPct?: number; disks?: [string, number][]; t3?: boolean; temp?: number } = {}): MachineView {
+  const { cpu = 10, ramPct = 40, disks = [['C:', 50]], t3, temp, ...rest } = patch;
   return {
     id: 'stormtrooper', name: 'Stormtrooper', online: true, lastSeen: iso(t),
     usage: {
       at: iso(t), cpu, ram: { used: ramPct * 100 * 1024 ** 2, total: 10_000 * 1024 ** 2 },
       disks: disks.map(([name, pct]) => ({ name, used: pct * GB, total: 100 * GB })),
       ...(t3 === undefined ? {} : { services: { t3 } }),
+      ...(temp === undefined ? {} : { temps: { cpu: temp } }),
     },
     vpns: [], apps: null, ...rest,
   };
@@ -125,6 +126,67 @@ test('CPU and RAM bodies name up to three Top Apps, WSL ones prefixed, the WSL A
   assert.equal(ram.body, `96${NB}% for 5 min: chrome 4.5${NB}GB, WSL node 2.0${NB}GB, Code 1.2${NB}GB`);
   // apps unknown: no list
   assert.equal(feed(createAlerts(rules()), 0, 300, () => ({ cpu: 97 }))[0].body, `97${NB}% for 5 min`);
+});
+
+test('CPU temperature fires after `for` seconds at or above `at`, with the Top Apps, and clears below `clear`', () => {
+  const a = createAlerts(rules()), ev = watch(a);
+  const temp = (from: number, to: number, value: number, apps: MachineView['apps'] = null) => feed(a, from, to, () => ({ temp: value, apps }), ev);
+  assert.deepEqual(temp(0, 250, 90), []);
+  assert.deepEqual(temp(260, 260, 80), [], 'below at (but above clear) resets the streak');
+  assert.deepEqual(temp(270, 560, 90), []);
+  const fired = temp(570, 570, 87, { list: [{ name: 'chrome', cpu: 40, ram: GB }, { name: 'node', cpu: 12, ram: GB }] });
+  assert.equal(fired.length, 1);
+  assert.deepEqual({ title: fired[0].title, body: fired[0].body, tag: fired[0].tag, machine: fired[0].machine, quiet: fired[0].quiet }, { title: 'Stormtrooper CPU hot', body: `87${NB}°C for 5 min: chrome 40${NB}%, node 12${NB}%`, tag: 'stormtrooper:temp', machine: 'stormtrooper', quiet: false });
+  assert.deepEqual(temp(580, 580, 95), []);
+  assert.deepEqual(temp(590, 590, 80), [], 'hysteresis: not below clear yet');
+  const cleared = temp(600, 600, 72);
+  assert.deepEqual(cleared.map(n => [n.title, n.body, n.tag, n.quiet]), [['Stormtrooper CPU temperature back to normal', `Now 72${NB}°C`, 'stormtrooper:temp', true]]);
+  assert.deepEqual(feed(createAlerts(rules()), 0, 300, () => ({ temp: 88 }))[0].body, `88${NB}°C for 5 min`);
+});
+
+test('a Machine with its own temperature limits uses them', () => {
+  const a = createAlerts(rules()), ev = watch(a);
+  const air = (s: number, temp: number) => ev([machine(at(s), { id: 'rogers-macbook-air', name: 'MacBook Air', temp })], at(s));
+  const out: Notification[] = [];
+  for (let s = 0; s <= 300; s += 10) out.push(...air(s, 100));
+  assert.deepEqual(out, [], '100 °C is normal for the fanless M4');
+  for (let s = 310; s <= 610; s += 10) out.push(...air(s, 106));
+  assert.deepEqual(out.map(n => [n.title, n.body, n.tag]), [['MacBook Air CPU hot', `106${NB}°C for 5 min`, 'rogers-macbook-air:temp']]);
+  assert.deepEqual(air(620, 96), [], 'between its clear and at');
+  assert.deepEqual(air(630, 94).map(n => [n.title, n.quiet]), [['MacBook Air CPU temperature back to normal', true]]);
+  // the PC keeps the shared limits next to it
+  assert.deepEqual(feed(createAlerts(rules()), 0, 300, () => ({ temp: 100 })).map(n => n.title), ['Stormtrooper CPU hot']);
+});
+
+test('a Machine that stops reporting its CPU temperature resets the streak, and releases an Alert that was firing', () => {
+  const a = createAlerts(rules()), ev = watch(a);
+  feed(a, 0, 200, () => ({ temp: 90 }), ev);
+  assert.deepEqual(feed(a, 210, 220, () => ({}), ev), []);
+  assert.deepEqual(feed(a, 230, 520, () => ({ temp: 90 }), ev), [], 'the 200 s before the gap do not count');
+  assert.equal(feed(a, 530, 530, () => ({ temp: 90 }), ev).length, 1);
+  const gone = feed(a, 540, 540, () => ({}), ev);
+  assert.deepEqual(gone.map(n => [n.title, n.body, n.tag, n.quiet]), [['CPU temperature on Stormtrooper is no longer reported', '', 'stormtrooper:temp', true]]);
+  assert.deepEqual(feed(a, 550, 560, () => ({}), ev), []);
+  assert.deepEqual(a.active(), []);
+  // a Machine that never reports one never has an entry
+  const b = createAlerts(rules());
+  b.evaluate([machine(T0)], T0);
+  assert.deepEqual(Object.keys(b.state().entries), []);
+});
+
+test('going Offline resets the temperature streak, and the rule can be turned off', () => {
+  const a = createAlerts(rules()), ev = watch(a);
+  feed(a, 0, 200, () => ({ temp: 90 }), ev);
+  ev([{ ...machine(at(210), { temp: 90 }), online: false }], at(210));
+  assert.deepEqual(feed(a, 220, 500, () => ({ temp: 90 }), ev), []);
+  assert.equal(feed(a, 510, 520, () => ({ temp: 90 }), ev).length, 1);
+  for (const temp of [undefined, false] as const) {
+    assert.deepEqual(feed(createAlerts(rules({ temp })), 0, 600, () => ({ temp: 120 })), []);
+    assert.equal(tempLimits(rules({ temp }), 'stormtrooper'), null);
+  }
+  assert.deepEqual(tempLimits(rules(), 'stormtrooper'), { high: 75, hot: 85 });
+  assert.deepEqual(tempLimits(rules(), 'rogers-macbook-air'), { high: 95, hot: 105 });
+  assert.deepEqual(tempLimits(rules({ temp: { at: 80, clear: 70, for: 60, machines: { air: { at: 100 } } } }), 'air'), { high: 70, hot: 100 });
 });
 
 test('T3 stopped fires on true to false, not while false, and clears when true again', () => {
@@ -432,6 +494,16 @@ test('loadRules reads alerts.json, and falls back to the defaults with a warning
       { ...DEFAULT_RULES, cpu: { at: 90, clear: 80, for: -1 } },
       { ...DEFAULT_RULES, cpu: { at: 120, clear: 80, for: 300 } },
       { ...DEFAULT_RULES, ram: { at: 90, clear: 'x', for: 300 } },
+      { ...DEFAULT_RULES, temp: { at: 75, clear: 85, for: 300 } },
+      { ...DEFAULT_RULES, temp: { at: 85, clear: 85, for: 300 } },
+      { ...DEFAULT_RULES, temp: { at: 151, clear: 75, for: 300 } },
+      { ...DEFAULT_RULES, temp: { at: 85, clear: 75 } },
+      { ...DEFAULT_RULES, temp: true },
+      { ...DEFAULT_RULES, temp: { at: 85, clear: 75, for: 300, machines: [] } },
+      { ...DEFAULT_RULES, temp: { at: 85, clear: 75, for: 300, machines: { air: { at: 70, clear: 75 } } } },
+      { ...DEFAULT_RULES, temp: { at: 85, clear: 75, for: 300, machines: { air: { at: 'hot' } } } },
+      { ...DEFAULT_RULES, temp: { at: 85, clear: 75, for: 300, machines: { air: { limit: 90 } } } },
+      { ...DEFAULT_RULES, temp: { at: 85, clear: 75, for: 300, machines: { air: 105 } } },
       { ...DEFAULT_RULES, offline: { for: 120, machines: 'stormtrooper' } },
       { ...DEFAULT_RULES, cooldown: -5 },
       { ...DEFAULT_RULES, vpn: 'yes' },
@@ -447,6 +519,12 @@ test('loadRules reads alerts.json, and falls back to the defaults with a warning
     assert.equal(warnings.length, 1);
     const custom = { ...DEFAULT_RULES, cooldown: 60, offline: { for: 30, machines: [] } };
     assert.deepEqual(loadRules(write(custom), warn), custom);
+    const { temp, ...older } = DEFAULT_RULES;
+    for (const accepted of [older, { ...older, temp: false }, { ...older, temp: { at: 150, clear: 0, for: 0 } }, { ...older, temp: { at: 90, clear: 80, for: 60, machines: { air: { clear: 70 }, pc: {} } } }]) {
+      warnings.length = 0;
+      assert.deepEqual(loadRules(write(accepted), warn), accepted, JSON.stringify(accepted));
+      assert.deepEqual(warnings, []);
+    }
   } finally { rmSync(dir, { recursive: true }); }
 });
 

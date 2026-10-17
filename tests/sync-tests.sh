@@ -4,6 +4,8 @@
 SRC="$(cd "$(dirname "$0")/.." && pwd)"; T=$(mktemp -d /tmp/agents-t.XXXX); cd $T
 # systemctl reaches this user's real services whatever HOME is, so no test may run the real one.
 mkdir -p $T/nosys; printf '#!/bin/sh\n[ "$2" = is-active ] && exit 3\nexit 0\n' > $T/nosys/systemctl; chmod +x $T/nosys/systemctl; export PATH=$T/nosys:$PATH
+# setup on WSL asks Windows about HWiNFO; a drive that isn't there keeps every test away from the real one.
+export HANGAR_C_DRIVE=$T/no-c-drive
 pass(){ echo "PASS $*"; }; fail(){ echo "FAIL $*"; FAILS=1; }; FAILS=0
 edit(){ perl -pi -e "$1" "$2"; }   # in-place edit; sed -i differs between BSD and GNU
 # Seed a fresh repo from the working tree, without its .git, so no real remote is ever reachable
@@ -197,5 +199,24 @@ unmac
 git -C $T/D commit -q --allow-empty -m "newer still" && git -C $T/D push -q origin HEAD:main; : > $CALLS
 hg update hangar </dev/null >$T/out 2>$T/err; rc=$?
 [ $rc = 1 ] && [ "$(git -C $C/.agents rev-parse HEAD)" = "$(git -C $T/D rev-parse HEAD)" ] && ! grep -q 'systemctl --user --no-block' $CALLS && pass "11u no restart when the rebuild after the pull failed" || { fail 11u; cat $CALLS $T/out $T/err; }
+# 12 PC temperature: setup runs HWiNFO's one-time setup elevated through a stub Windows (WSL only)
+if grep -qi microsoft /proc/version 2>/dev/null; then
+  hg setup </dev/null >$T/out 2>&1; rc=$?
+  [ $rc = 0 ] && grep -q "install HWiNFO64 for the PC's CPU temperature" $T/out && pass "12a no HWiNFO64: setup warns and goes on" || { fail 12a; cat $T/out; }
+  WIN=$T/win; export HANGAR_C_DRIVE=$WIN; S32=$WIN/Windows/System32; mkdir -p "$S32/WindowsPowerShell/v1.0" "$WIN/Program Files/HWiNFO64" $T/appdata; : > "$WIN/Program Files/HWiNFO64/HWiNFO64.EXE"
+  printf '#!/bin/sh\n[ -e %s/task ]\n' $T > $S32/schtasks.exe
+  printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %s/ps-calls\n[ -z "$PS_FAIL" ] || exit 1\ntouch %s/task\n' $T $T > $S32/WindowsPowerShell/v1.0/powershell.exe
+  printf '#!/bin/sh\necho "C:\\Users\\t\\AppData\\Local\r"\n' > $S32/cmd.exe
+  chmod +x $S32/schtasks.exe $S32/cmd.exe $S32/WindowsPowerShell/v1.0/powershell.exe
+  stub wslpath '[ "$1" = -w ] && printf "%s\n" "W:\\appdata\\hangar\\hwinfo-setup.ps1" || echo '$T/appdata
+  PS_FAIL=1 hg setup </dev/null >$T/out 2>&1; rc=$?
+  [ $rc = 0 ] && grep -q "Approve the UAC prompt on the PC's screen" $T/out && grep -q "HWiNFO64 setup didn't finish" $T/out && [ ! -e $T/task ] && pass "12b a declined UAC prompt warns, setup still succeeds" || { fail 12b; cat $T/out; }
+  hg setup </dev/null >$T/out 2>&1; rc=$?
+  [ $rc = 0 ] && cmp -s $T/appdata/hangar/hwinfo-setup.ps1 $C/.agents/dashboard/windows/hwinfo-setup.ps1 && grep -q 'Start-Process powershell.exe -Verb RunAs -Wait -PassThru' $T/ps-calls && grep -qF 'W:\appdata\hangar\hwinfo-setup.ps1' $T/ps-calls && grep -q 'HWiNFO64 set up to start at logon' $T/out && pass "12c the script is copied to Windows and run elevated" || { fail 12c; cat $T/out $T/ps-calls; }
+  : > $T/ps-calls; hg setup </dev/null >$T/out 2>&1; rc=$?
+  [ $rc = 0 ] && [ ! -s $T/ps-calls ] && grep -q 'HWiNFO64 starts at logon' $T/out && pass "12d with the task in place, setup asks for nothing" || { fail 12d; cat $T/out $T/ps-calls; }
+  export HANGAR_C_DRIVE=$T/no-c-drive
+fi
+
 rm -rf $T
 if [ $FAILS = 0 ]; then echo "ALL PASS"; else echo "SOME FAILED"; exit 1; fi

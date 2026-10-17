@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 const powershell = '/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe';
-import { reportFromLine, vpnScript, processScript, script } from './collector.ts';
+import { reportFromLine, gpuTemperature, vpnScript, tempScript, processScript, script } from './collector.ts';
 test('PowerShell line maps Windows Usage and t3 status, skipping zero-size drives', () => {
   const line = '\uFEFF{"cpu":12.5,"ram":{"used":100,"total":200},"disks":[{"name":"C:","used":30,"total":100},{"name":"D:","used":0,"total":0}]}';
   assert.deepEqual(reportFromLine(line, 'pc', true), { machine: 'pc', cpu: 12.5, ram: { used: 100, total: 200 }, disks: [{ name: 'C:', used: 30, total: 100 }], services: { t3: true } });
@@ -17,6 +17,42 @@ test('malformed collector lines and invalid Usage are rejected', () => {
 test('collector preserves OS-managed VPNs including status and internal kind', () => {
   const line = '{"cpu":10,"ram":{"used":1,"total":2},"disks":[],"vpns":[{"name":"Steeprock","status":"connected","kind":"ppp"}]}';
   assert.deepEqual(reportFromLine(line, 'pc', true).vpns, [{ name: 'Steeprock', status: 'connected', kind: 'ppp' }]);
+});
+
+test('collector merges the GPU temperature from nvidia-smi with the CPU one from Windows', () => {
+  const line = '{"cpu":10,"ram":{"used":1,"total":2},"disks":[],"temps":{"cpu":49.5}}';
+  assert.deepEqual(reportFromLine(line, 'pc', true, 38).temps, { cpu: 49.5, gpu: 38 });
+  assert.deepEqual(reportFromLine(line, 'pc', true).temps, { cpu: 49.5 });
+  assert.deepEqual(reportFromLine(line.replace(',"temps":{"cpu":49.5}', ''), 'pc', true, 38).temps, { gpu: 38 });
+  assert.equal('temps' in reportFromLine(line.replace(',"temps":{"cpu":49.5}', ''), 'pc', true), false);
+  assert.equal('temps' in reportFromLine(line.replace('{"cpu":49.5}', '{"cpu":1000}'), 'pc', true), false);
+});
+test('nvidia-smi output is the first GPU line or no temperature', () => {
+  assert.equal(gpuTemperature('38\n'), 38);
+  assert.equal(gpuTemperature('38\n41\n'), 38);
+  assert.equal(gpuTemperature('41'), 41);
+  for (const output of ['', '\n', 'N/A\n', '[N/A]', 'No devices were found\n', '38 C']) assert.equal(gpuTemperature(output), undefined, output);
+});
+
+test('Windows CPU temperature is found by HWiNFO label despite holes, parsed in any culture, and omitted on failure', { skip: !existsSync(powershell) }, () => {
+  for (const mode of ['holes', 'missing', 'other', 'junk', 'unlabelled']) {
+    const source = `
+${script.slice(0, script.indexOf('$cpu ='))}
+[Threading.Thread]::CurrentThread.CurrentCulture = [Globalization.CultureInfo]::GetCultureInfo('de-DE')
+function Get-ItemProperty {
+  param([string]$Path, [string]$ErrorAction)
+  if ('${mode}' -eq 'missing') { throw 'Cannot find path' }
+  $props = [ordered]@{PSPath='registry'; Sensor0='Sensors'; Label0='Total CPU Usage'; ValueRaw0='7.3'; Sensor3='Ryzen'; Label3=$(if ('${mode}' -eq 'other') { 'GPU Temperature' } elseif ('${mode}' -eq 'unlabelled') { 'CPU' } else { 'CPU (Tctl/Tdie)' }); Value3='49,5'; ValueRaw3=$(if ('${mode}' -eq 'junk') { 'n/a' } else { '49.5' })}
+  [pscustomobject]$props
+}
+$report = @{cpu=10}
+${tempScript}
+$report | ConvertTo-Json -Depth 4 -Compress`;
+    const output = execFileSync(powershell, ['-NoProfile', '-NonInteractive', '-OutputFormat', 'Text', '-EncodedCommand', Buffer.from(source, 'utf16le').toString('base64')], { encoding: 'utf8', timeout: 20_000 });
+    const report = JSON.parse(output.trim());
+    if (mode === 'holes') assert.deepEqual(report.temps, { cpu: 49.5 });
+    else assert.equal('temps' in report, false, mode);
+  }
 });
 
 test('Windows VPN collection omits failures, prefers per-user duplicates and preserves UTF-8', { skip: !existsSync(powershell) }, () => {

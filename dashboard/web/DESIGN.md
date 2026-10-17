@@ -20,6 +20,8 @@ colors:
   ink-ram-night: "oklch(0.74 0.12 312)"
   ink-disk: "oklch(0.5 0.09 182)"
   ink-disk-night: "oklch(0.76 0.09 182)"
+  ink-temp: "oklch(0.5 0.12 128)"
+  ink-temp-night: "oklch(0.78 0.12 128)"
   online-green: "oklch(0.56 0.14 152)"
   online-green-night: "oklch(0.77 0.15 152)"
   high-ochre: "oklch(0.53 0.12 68)"
@@ -125,7 +127,7 @@ components:
 
 Every Machine is a sheet from a strip-chart recorder. The pen rests at the current reading, and the last 24 hours trace out behind it on chart paper whose grid is the real scale: a column every 3 hours, a row every 25 %. The page answers one question, "is everything OK?", with a verdict sentence at display size, then lets each sheet confirm it.
 
-The ground is cool green-grey paper with graphite text. Grid ink is printed only where a trace runs, never as page decoration. Each channel has its own pen ink (CPU blue, RAM violet, Disk teal-green). Red is reserved for readings past 90 %; ochre marks "high" (80 % and over). Everything else stays quiet, so a single red number or a hollow pen is noticed without reading. The system follows the OS light/dark setting; there is no toggle.
+The ground is cool green-grey paper with graphite text. Grid ink is printed only where a trace runs, never as page decoration. Each channel has its own pen ink (CPU blue, Temperature olive, RAM violet, Disk teal-green). Red is reserved for readings past 90 % and a hot CPU; ochre marks "high" (80 % and over) and "warm". Everything else stays quiet, so a single red number or a hollow pen is noticed without reading. The system follows the OS light/dark setting; there is no toggle.
 
 Archivo is the only family. Words use normal width; readings use the width axis at 88 % with tabular figures so live numbers don't jitter.
 
@@ -138,7 +140,7 @@ Archivo is the only family. Words use normal width; readings use the width axis 
 
 ## Colors
 
-Cool green-tinted neutrals (hue 160-170) with three pen inks at one lightness, and two alarm inks. Light-mode values are listed first; the `-night` tokens are the dark-mode counterparts, lighter and slightly less chromatic so the same hue reads on dark paper.
+Cool green-tinted neutrals (hue 160-170) with four pen inks at one lightness, and two alarm inks. Light-mode values are listed first; the `-night` tokens are the dark-mode counterparts, lighter and slightly less chromatic so the same hue reads on dark paper.
 
 ### Primary
 - **Graphite** (`graphite`, `graphite-night`): body text, readings, the verdict, and the solid button fill. Slightly blue-cool, never pure black.
@@ -147,11 +149,12 @@ Cool green-tinted neutrals (hue 160-170) with three pen inks at one lightness, a
 - **CPU Blue** (`ink-cpu`): CPU trace, its pen dot, the text-selection tint, and App share meters while Apps are sorted by CPU.
 - **RAM Violet** (`ink-ram`): RAM trace and pen dot, and App share meters while sorted by RAM.
 - **Disk Teal-Green** (`ink-disk`): Disk trace, and the drive meter fill while a drive is below 80 %.
+- **Temperature Olive** (`ink-temp`): the CPU Temperature trace and pen. A warm hue that is neither ochre nor red, so it never reads as an alarm.
 
 ### Tertiary (state inks)
 - **Online Green** (`online-green`): the filled pen dot for Online, the Live connection dot, T3 Running, a Connected VPN.
 - **High Ochre** (`high-ochre`): 80-89 % readings, trace and drive meter; T3 stopped; reconnecting; stale-notice border. High is not a verdict issue.
-- **Full Red** (`full-red`): 90 % and over only: the reading, its trace and pen, the drive meter, and the numeral inside the verdict sentence. Also the destructive token: the message of a command that failed (VPN, Quit, Alerts) and the tinted Force quit confirmation.
+- **Full Red** (`full-red`): 90 % and over only (and a CPU at its Machine's hot limit): the reading, its trace and pen, the drive meter, and the numeral inside the verdict sentence. Also the destructive token: the message of a command that failed (VPN, Quit, Alerts) and the tinted Force quit confirmation.
 
 ### Neutral
 - **Chart Paper** (`chart-paper`): page ground.
@@ -162,7 +165,7 @@ Cool green-tinted neutrals (hue 160-170) with three pen inks at one lightness, a
 - **Focus Ring** (`focus-ring`): 2px outline, 2px offset, on every focusable element.
 
 ### Named Rules
-**The Reserved Red Rule.** Red appears only for readings at 90 % or more (and the matching verdict numeral), for a failed command's message (VPN, Quit, Alerts), and for the confirming button of Force quit, the one action that can lose work. Offline, stopped, reconnecting, Disconnected, a command under way, Quit, "Quitting…", Protected and Alerts blocked are never red.
+**The Reserved Red Rule.** Red appears only for readings at 90 % or more or a CPU Temperature at its Machine's hot limit (and the matching verdict numeral), for a failed command's message (VPN, Quit, Alerts), and for the confirming button of Force quit, the one action that can lose work. Offline, stopped, reconnecting, Disconnected, a command under way, Quit, "Quitting…", Protected and Alerts blocked are never red.
 
 **The Printed-Where-It-Runs Rule.** Grid ink exists only inside a trace or a drive track. It is never a page background or texture.
 
@@ -222,10 +225,16 @@ Soft but not round: sheets use the 0.7rem radius (`xl`), buttons and the empty-s
 - The Offline trace stops at Last seen; the rest of the 24 h paper stays blank (a gap, not interpolation).
 
 ### Trace (channel)
-- 24 h of History, 1.5px monotone line, 9 % ink fill (5 % for Disk), vertical grid every 3 h, horizontal rules at 0/25/50/75/100 %, domain fixed 0-100. Height 3.75rem, or 5rem on the Disk trace that carries the time axis.
+- 24 h of History, 1.5px monotone line, 9 % ink fill (5 % for Disk), vertical grid every 3 h, horizontal rules at 0/25/50/75/100 %, domain fixed 0-100. The Temperature trace uses the same paper in °C (rows every 25 °C); a reading over 100 °C sits on the top rule. Height 3.75rem, or 5rem on the Disk trace that carries the time axis.
 - The pen: 3.5px-radius filled dot at the last point; hollow with 60 % ink ring when Offline. The trace takes Ochre or Red ink when the level is high or full.
-- The trace is also the way into History: hover (or drag a finger along it) and a dotted rule crosses all three traces at that minute, with a small label on the trace under the pointer: clock time, the channel's value, and "Click for Top Apps". Each 10-minute point stands for its busiest minute in that channel, so hovering a flat-looking stretch reveals a spike the averaging hid. Click or tap pins the minute: a solid Graphite rule at 55 % across all three traces, and the Top Apps panel opens beneath them. Clicking the pinned minute again unpins it.
+- The trace is also the way into History: hover (or drag a finger along it) and a dotted rule crosses all the sheet's traces at that minute, with a small label on the trace under the pointer: clock time, the channel's value, and "Click for Top Apps". Each 10-minute point stands for its busiest minute in that channel, so hovering a flat-looking stretch reveals a spike the averaging hid. Click or tap pins the minute: a solid Graphite rule at 55 % across all the traces, and the Top Apps panel opens beneath them. Clicking the pinned minute again unpins it.
 - Keyboard: each trace is a slider (Tab to it; arrows step 10 minutes, Shift or Page keys an hour, Home/End the ends; Enter opens or closes that minute's Top Apps; Escape closes). Cursor is a crosshair. The footer says it in one sentence.
+
+### Temperature (channel)
+- A channel row under CPU, shown once the Machine has reported a Temperature (now or in its History). Label "Temperature"; the reading is the CPU's, in °C ("54 °C"); the PC adds its GPU as the detail line ("GPU 41 °C").
+- Level comes from the Machine's own limits, the CPU Temperature Alert's thresholds (`tempLimits`): ochre with "warm" from `high`, red with "hot" from `hot`. A fanless Mac runs far hotter than the PC by design, so the limits are per Machine, not one scale.
+- When the sensors stop answering (HWiNFO not running on the PC), the reading is "—" and the detail says "Not reported"; the trace keeps its History. A hot CPU on an Online Machine is a verdict issue: "The CPU on Stormtrooper is hot, at 88 °C."
+- The minute panel's line reads "CPU 95 % at 72 °C · RAM 29 % that minute".
 
 ### Drive row
 - Name left, "used of total" plus percentage right (percentage in level color), a 6px meter beneath. Fill is Disk teal-green below 80 %, ochre to 89 %, red from 90 %. Track is Grid Ink.

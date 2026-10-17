@@ -9,8 +9,12 @@ A computer that hangar sets up and the Dashboard watches: today the MacBook and 
 _Avoid_: host, node, device, box, server
 
 **Usage**:
-How loaded a Machine is right now, as seen by its own operating system: CPU, RAM and disk.
+How loaded a Machine is right now, as seen by its own operating system: CPU, RAM and disk, and its Temperature.
 _Avoid_: stats, metrics, load, health
+
+**Temperature**:
+The CPU's temperature in °C as the Machine's own sensors report it; on the PC also its GPU's. The PC's CPU comes from HWiNFO64, which needs admin rights to read it. A Machine that can't read one has none, and the Dashboard shows none.
+_Avoid_: temp, heat, thermals
 
 **Online**:
 A Machine whose latest report of its Usage arrived within the last half minute.
@@ -24,14 +28,14 @@ _Avoid_: down, off, asleep
 When an Offline Machine last reported its Usage.
 
 **History**:
-A Machine's Usage over the last 24 hours.
+A Machine's Usage and Temperature over the last 24 hours.
 
 **VPN**:
 A VPN connection a Machine's operating system manages, such as Steeprock: Connected, Disconnected, or on its way between them. Tailscale doesn't count: the Dashboard reaches Machines through it, so disconnecting it from there would cut the Dashboard off.
 _Avoid_: tunnel, network
 
 **Dashboard**:
-The page that shows every Machine: Online or Offline, its current Usage, its History, its VPNs (which it can connect and disconnect), its Apps (which it can Quit) and its Updates (which it can run).
+The page that shows every Machine: Online or Offline, its current Usage and Temperature, its History, its VPNs (which it can connect and disconnect), its Apps (which it can Quit) and its Updates (which it can run).
 _Avoid_: monitor, status page
 
 **Process**:
@@ -63,5 +67,5 @@ A newer version of a tool Hangar keeps current on a Machine: T3 Code, Claude Cod
 _Avoid_: upgrade, patch, outdated item
 
 **Alert**:
-A browser push notification about a problem on a Machine: a disk nearly full, CPU or RAM high for minutes on end, a VPN dropped, the T3 service stopped, or the PC Offline. When the problem clears, the Alert is quietly replaced by one saying so. Each browser or phone opts in.
+A browser push notification about a problem on a Machine: a disk nearly full, CPU or RAM high or the CPU too hot for minutes on end, a VPN dropped, the T3 service stopped, or the PC Offline. When the problem clears, the Alert is quietly replaced by one saying so. Each browser or phone opts in.
 _Avoid_: alarm, warning

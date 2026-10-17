@@ -19,10 +19,13 @@ export class Store {
     this.db = new DatabaseSync(path);
     this.db.exec(`PRAGMA journal_mode=WAL;
       CREATE TABLE IF NOT EXISTS latest (machine TEXT PRIMARY KEY, at INTEGER NOT NULL, report TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS history (machine TEXT, t INTEGER, cpu REAL, ram REAL, disk REAL, count INTEGER, PRIMARY KEY(machine,t));
+      CREATE TABLE IF NOT EXISTS history (machine TEXT, t INTEGER, cpu REAL, ram REAL, disk REAL, count INTEGER, temp REAL, tcount INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(machine,t));
       CREATE TABLE IF NOT EXISTS top_apps (machine TEXT, t INTEGER, sums TEXT NOT NULL, samples INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(machine,t));
       CREATE TABLE IF NOT EXISTS subscriptions (endpoint TEXT PRIMARY KEY, keys TEXT NOT NULL, created INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS alert_state (id INTEGER PRIMARY KEY CHECK (id = 1), state TEXT NOT NULL);`);
+    if (!(this.db.prepare('PRAGMA table_info(history)').all() as any[]).some(c => c.name === 'temp')) {
+      this.db.exec('ALTER TABLE history ADD COLUMN temp REAL; ALTER TABLE history ADD COLUMN tcount INTEGER NOT NULL DEFAULT 0');
+    }
     if (!(this.db.prepare('PRAGMA table_info(top_apps)').all() as any[]).some(c => c.name === 'samples')) {
       this.db.exec('ALTER TABLE top_apps ADD COLUMN samples INTEGER NOT NULL DEFAULT 0; UPDATE top_apps SET samples=COALESCE((SELECT count FROM history WHERE history.machine=top_apps.machine AND history.t=top_apps.t),0)');
     }
@@ -31,7 +34,7 @@ export class Store {
   intake(report: Report, now: number) {
     if (report.vpns === undefined) report = { ...report, vpns: this.vpns(report.machine) };
     const t = minute(now);
-    const previous = this.db.prepare('SELECT cpu,ram,disk,count FROM history WHERE machine=? AND t=?').get(report.machine, t) as any;
+    const previous = this.db.prepare('SELECT cpu,ram,disk,count,temp,tcount FROM history WHERE machine=? AND t=?').get(report.machine, t) as any;
     const p = average(previous, report);
     const old = this.db.prepare('SELECT sums,samples FROM top_apps WHERE machine=? AND t=?').get(report.machine, t) as any;
     const samples = (old?.samples ?? 0) + (report.processes !== undefined || report.wsl !== undefined ? 1 : 0);
@@ -46,7 +49,7 @@ export class Store {
     this.db.exec('BEGIN');
     try {
       this.db.prepare('INSERT OR REPLACE INTO latest VALUES (?,?,?)').run(report.machine, now, JSON.stringify(persisted));
-      this.db.prepare('INSERT OR REPLACE INTO history VALUES (?,?,?,?,?,?)').run(report.machine, t, p.cpu, p.ram, p.disk, p.count);
+      this.db.prepare('INSERT OR REPLACE INTO history VALUES (?,?,?,?,?,?,?,?)').run(report.machine, t, p.cpu, p.ram, p.disk, p.count, p.temp, p.tcount);
       this.db.prepare('INSERT OR REPLACE INTO top_apps (machine,t,sums,samples) VALUES (?,?,?,?)').run(report.machine, t, JSON.stringify(top([...sums.values()], 15)), samples);
       this.prune(now);
       this.db.exec('COMMIT');
@@ -90,7 +93,7 @@ export class Store {
     const report = latest ? JSON.parse(latest.report) : null;
     const vpns = report?.vpns ?? [];
     if (report) { delete report.machine; delete report.vpns; }
-    const history = !withHistory ? [] : this.db.prepare('SELECT t,cpu,ram,disk FROM history WHERE machine=? AND t>=? ORDER BY t DESC LIMIT 1440').all(machine.id, cutoff(now)).reverse().map((p: any): Point => ({ ...p, t: new Date(p.t).toISOString() }));
+    const history = !withHistory ? [] : this.db.prepare('SELECT t,cpu,ram,disk,temp FROM history WHERE machine=? AND t>=? ORDER BY t DESC LIMIT 1440').all(machine.id, cutoff(now)).reverse().map((p: any): Point => ({ ...p, t: new Date(p.t).toISOString() }));
     const known = this.processes.get(machine.id);
     const apps = known ? buildApps(known, machine, known.at, this.protection) : null;
     return { ...identity, apps, online: online(latest?.at ?? null, now), lastSeen: at, usage: report ? { at, ...report } : null, vpns: vpns.map((v: any) => ({ name: v.name, status: v.status, pending: null, error: null })), history };
