@@ -1,13 +1,12 @@
 import { ArrowDownIcon, ChevronRightIcon } from "lucide-react"
-import { createContext, use, useCallback, useId, useMemo, useRef, useState } from "react"
+import { createContext, use, useEffect, useId, useRef, useState } from "react"
 
-import { QuitDialog, type QuitSubject } from "@/components/quit-dialog"
+import { QuitDialog } from "@/components/quit-dialog"
 import { Button } from "@/components/ui/button"
-import { useQuits, type QuitState } from "@/hooks/use-quits"
+import { useQuits } from "@/hooks/use-quits"
 import { useStoredFlag } from "@/hooks/use-stored-flag"
 import {
-  findApp,
-  indexProcesses,
+  quittable,
   sameOrder,
   SHOWN,
   sortedOrder,
@@ -17,16 +16,11 @@ import {
 } from "@/lib/apps"
 import { formatPercent, formatRam } from "@/lib/format"
 import { processKey, type QuitTarget } from "@/lib/quit"
+import { subjectKey, type Ask, type QuitState, type Subject } from "@/lib/quit-runs"
 import type { App, AppProcess, Machine, Where } from "@/lib/types"
 import { cn } from "@/lib/utils"
 
 const MiB = 1024 ** 2
-
-/** The server takes at most this many `targets` in one Quit. */
-const MAX_TARGETS = 200
-
-/** Asks for a confirmation; the dialog reads the subject fresh from each report. */
-type Ask = { subject: string; force: boolean; targets?: QuitTarget[] }
 
 type Section = {
   machine: Machine
@@ -45,10 +39,7 @@ type Section = {
 const SectionContext = createContext<Section | null>(null)
 const useSection = () => use(SectionContext)!
 
-const appId = (name: string, where: Where) => `app|${where ?? ""}|${name}`
-const processId = (key: string) => `proc|${key}`
-const targetsOf = (app: App, where: Where): QuitTarget[] =>
-  app.processes.filter((p) => p.quit).map((p) => ({ pid: p.pid, started: p.started, ...(where ? { where } : {}) }))
+const appSubject = (name: string, where: Where): Subject => ({ kind: "app", name, where })
 
 /**
  * A Machine's Apps, collapsed by default (remembered per Machine): the 10
@@ -72,46 +63,18 @@ export function AppsSection({ machine, muted, locked }: {
   const askedFrom = useRef<HTMLElement | null>(null)
   const listId = useId()
 
-  const index = useMemo(() => indexProcesses(apps), [apps])
-  const present = useCallback((key: string) => index.has(key), [index])
-  const quits = useQuits(machine.id, apps, present)
-
-  if (!apps) return null
-
-  const resolve = (a: Ask): QuitSubject | null => {
-    const [kind, where, ...rest] = a.subject.split("|")
-    const w: Where = where === "wsl" ? "wsl" : undefined
-    const place = `${machine.name}${w ? " (WSL)" : ""}`
-    if (kind === "app") {
-      const app = findApp(apps, rest.join("|"), w)
-      if (!app) return null
-      const common = { name: app.name, place, cpu: app.cpu, ram: app.ram, count: app.count, force: a.force }
-      if (a.force) {
-        // Force quit only what didn't close, by the identities the server
-        // answered with (some may be beyond the 20 listed here).
-        const state = quits.stateOf(a.subject, { one: app.name, many: app.name })
-        if (state.kind !== "stuck") return null
-        const asked = new Set((a.targets ?? []).map(keyOf))
-        const targets = state.remaining.filter((t) => asked.has(keyOf(t))).slice(0, MAX_TARGETS)
-        return targets.length === 0 ? null : { ...common, request: { targets }, asks: targets.length }
-      }
-      if (!app.quit) return null
-      // The server finds all of the App's Processes, beyond the 20 listed here.
-      const listed = targetsOf(app, w).length
-      const asks = listed === app.processes.length ? app.count : listed
-      return { ...common, request: { app: app.name, ...(w ? { where: w } : {}) }, asks }
-    }
-    const key = a.subject.slice("proc|".length)
-    const found = index.get(key)
-    if (!found || (!a.force && !found.process.quit)) return null
-    const p = found.process
-    const target = { pid: p.pid, started: p.started, ...(found.where ? { where: found.where } : {}) }
-    return { name: p.name, place, cpu: p.cpu, ram: p.ram, count: 1, request: { targets: [target] }, asks: 1, force: a.force }
-  }
+  const quits = useQuits(machine.id, apps)
 
   // The dialog's subject, from the latest report; null closes it.
-  const subject = asking ? resolve(asking) : null
-  if (asking && !subject) setAsking(null)
+  const confirmation = asking ? quits.confirm(asking, machine.name) : null
+  // Once there is nothing left to ask about, forget the ask for good, so a
+  // later report that brings the App back can't reopen the dialog: nothing
+  // cancels the retirement once a render has seen it.
+  useEffect(() => {
+    if (asking && confirmation === null) queueMicrotask(() => setAsking((now) => (now === asking ? null : now)))
+  }, [asking, confirmation])
+
+  if (!apps) return null
 
   const section: Section = {
     machine,
@@ -187,7 +150,7 @@ export function AppsSection({ machine, muted, locked }: {
         </div>
 
         <QuitDialog
-          subject={subject}
+          subject={confirmation}
           locked={locked}
           finalFocus={askedFrom}
           onClose={() => setAsking(null)}
@@ -201,8 +164,6 @@ export function AppsSection({ machine, muted, locked }: {
     </SectionContext>
   )
 }
-
-const keyOf = (t: QuitTarget) => processKey(t.where, t.pid, t.started)
 
 /** Name | CPU | RAM, shared by the header and every App row. */
 const COLUMNS = "grid-cols-[minmax(0,1fr)_3.25rem_4.5rem]"
@@ -262,10 +223,11 @@ function AppList({ apps, where, label }: { apps: App[]; where: Where; label: str
 
 function AppRow({ app, where }: { app: App; where: Where }) {
   const { machine, inUse, muted, sortBy, expanded, toggle, quits } = useSection()
-  const id = appId(app.name, where)
+  const subject = appSubject(app.name, where)
+  const id = subjectKey(subject)
   const open = expanded.has(id)
   const panelId = useId()
-  const state = quits.stateOf(id, { one: app.name, many: app.name })
+  const state = quits.state(subject)
   const whole = sortBy === "cpu" ? inUse.cpu : inUse.ram
   const share = whole > 0 ? Math.min(100, (valueOf(app, sortBy) / whole) * 100) : 0
   const isWsl = app.apps !== undefined
@@ -345,9 +307,9 @@ function Figure({ value, active, suffix, compact = false }: { value: string; act
 
 function ProcessList({ app, where, state }: { app: App; where: Where; state: QuitState }) {
   const { machine, locked, muted, ask } = useSection()
-  const id = appId(app.name, where)
+  const subject = appSubject(app.name, where)
   const more = app.count - app.processes.length
-  const quittable = targetsOf(app, where).length
+  const canQuit = quittable(app, where).length
 
   return (
     <>
@@ -370,17 +332,17 @@ function ProcessList({ app, where, state }: { app: App; where: Where; state: Qui
                 ? "1 Process"
                 : app.count > app.processes.length
                   ? `${app.count} Processes`
-                  : quittable === app.count
+                  : canQuit === app.count
                     ? `All ${app.count} Processes`
-                    : `${quittable} of ${app.count} Processes can be quit`}
+                    : `${canQuit} of ${app.count} Processes can be quit`}
             </span>
             <QuitControl
               state={state}
               name={app.name}
               disabled={locked !== null}
               muted={muted}
-              onQuit={(from) => ask({ subject: id, force: false }, from)}
-              onForce={(targets, from) => ask({ subject: id, force: true, targets }, from)}
+              onQuit={(from) => ask({ subject, force: false }, from)}
+              onForce={(targets, from) => ask({ subject, force: true, targets }, from)}
               label={`Quit ${app.name}`}
               size="default"
             />
@@ -399,8 +361,8 @@ function ProcessList({ app, where, state }: { app: App; where: Where; state: Qui
 function ProcessRow({ process: p, where }: { process: AppProcess; where: Where }) {
   const { sortBy, locked, muted, quits, ask } = useSection()
   const key = processKey(where, p.pid, p.started)
-  const id = processId(key)
-  const state = quits.processState(id, key, p.name)
+  const subject: Subject = { kind: "process", key }
+  const state = quits.state(subject)
   const note = "note" in state ? state.note : null
 
   return (
@@ -423,8 +385,8 @@ function ProcessRow({ process: p, where }: { process: AppProcess; where: Where }
             name={`${p.name}, PID ${p.pid}`}
             disabled={locked !== null}
             muted={muted}
-            onQuit={(from) => ask({ subject: id, force: false }, from)}
-            onForce={(_targets, from) => ask({ subject: id, force: true }, from)}
+            onQuit={(from) => ask({ subject, force: false }, from)}
+            onForce={(_targets, from) => ask({ subject, force: true }, from)}
             label="Quit"
             size="sm"
             subtle

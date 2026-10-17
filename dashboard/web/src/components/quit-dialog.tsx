@@ -11,24 +11,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { formatPercent, formatRam } from "@/lib/format"
-import type { QuitRequest } from "@/lib/quit"
-
-/** What a confirmation is about, read fresh from the latest report on every render. */
-export type QuitSubject = {
-  /** The App's or Process's name. */
-  name: string
-  /** "Stormtrooper" or "Stormtrooper (WSL)". */
-  place: string
-  cpu: number
-  ram: number
-  /** Processes in the App (1 for a Process). */
-  count: number
-  /** What would be sent. */
-  request: QuitRequest
-  /** How many Processes it would ask, as far as the page can see. */
-  asks: number
-  force: boolean
-}
+import type { Confirmation } from "@/lib/quit-runs"
 
 /**
  * Asks before every Quit and Force quit. The subject is live: when it stops
@@ -43,9 +26,9 @@ export function QuitDialog({
   onClose,
   finalFocus,
 }: {
-  subject: QuitSubject | null
+  subject: Confirmation | null
   locked: string | null
-  onConfirm: (subject: QuitSubject) => void
+  onConfirm: (subject: Confirmation) => void
   onClose: () => void
   finalFocus?: RefObject<HTMLElement | null>
 }) {
@@ -66,9 +49,9 @@ function QuitDialogBody({
   onConfirm,
   finalFocus,
 }: {
-  subject: QuitSubject
+  subject: Confirmation
   locked: string | null
-  onConfirm: (subject: QuitSubject) => void
+  onConfirm: (subject: Confirmation) => void
   finalFocus?: RefObject<HTMLElement | null>
 }) {
   const { name, place, force } = subject
@@ -101,7 +84,7 @@ function QuitDialogBody({
   )
 }
 
-function describe({ name, cpu, ram, count, asks, force }: QuitSubject): string {
+function describe({ name, cpu, ram, count, asks, force }: Confirmation): string {
   const use = `${formatPercent(cpu)} CPU and ${formatRam(ram)}`
   if (force) {
     return asks === 1

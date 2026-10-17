@@ -1,4 +1,4 @@
-import { processKey } from "@/lib/quit"
+import { processKey, type QuitTarget } from "@/lib/quit"
 import type { App, AppProcess, Apps, Where } from "@/lib/types"
 
 export type SortBy = "cpu" | "ram"
@@ -24,6 +24,11 @@ export function findApp(apps: Apps | null, name: string, where: Where): App | un
   if (!apps) return undefined
   if (where === "wsl") return apps.list.find((a) => a.apps)?.apps?.find((a) => a.name === name)
   return apps.list.find((a) => a.name === name && !a.apps)
+}
+
+/** The Processes of `app` the Dashboard may Quit, as a Quit takes them. */
+export function quittable(app: App, where: Where): QuitTarget[] {
+  return app.processes.filter((p) => p.quit).map((p) => ({ pid: p.pid, started: p.started, ...(where ? { where } : {}) }))
 }
 
 /** The value a list sorts by: CPU percent, or RAM in bytes. */

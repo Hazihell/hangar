@@ -1,10 +1,7 @@
 import { createPower } from './power.ts';
 import { createUpdates, detachedExec } from './updates.ts';
-import { mayQuit } from './apps.ts';
-import type { Protection } from './apps.ts';
-import { quitProcesses } from './quit.ts';
+import { createQuit } from './quit.ts';
 import type { Local } from './quit.ts';
-import { readProc } from './proc.ts';
 import { execFile } from 'node:child_process';
 import { createVpn } from './vpn.ts';
 import type { Exec } from './vpn.ts';
@@ -40,29 +37,12 @@ export function createDashboard(options: { db: string; t3Db?: string; hangar?: s
   const machines = options.machines ?? JSON.parse(readFileSync(resolve(root, 'machines.json'), 'utf8'));
   const store = new Store(options.db), clock = options.clock ?? Date.now;
   const configuredHosts = () => options.hosts ?? dashboardHosts();
-  const mainPid = options.mainPid ?? (() => new Promise<number | null>(resolve => {
-    execFile('systemctl', ['--user', 'show', '-p', 'MainPID', '--value', 't3code.service'], { timeout: 3000, encoding: 'utf8' }, (error, stdout) => resolve(!error && /^\d+\s*$/.test(stdout) ? Number(stdout.trim()) : null));
-  }));
   const startedAt = clock();
   let lastObservedAt = startedAt;
   const streams = new Set<ServerResponse>(), statuses = new Map<string, boolean>();
   const exec = options.exec ?? execFile;
-  const ancestors = new Set<number>();
-  let ancestor = process.pid;
-  while (ancestor > 0 && !ancestors.has(ancestor)) { ancestors.add(ancestor); try { ancestor = readProc(ancestor)?.ppid ?? 0; } catch { break; } }
-  const protection: Protection = { windows: collectorPids, wsl: ancestors };
-  const usage = new Usage(store.db, machines, protection);
-  let refreshing = false;
-  function refreshProtection() {
-    if (refreshing || options.collect === false) return;
-    refreshing = true;
-    exec('systemctl', ['--user', 'show', '-p', 'MainPID', '--value', 't3code.service'], { timeout: 3000, encoding: 'utf8' }, (error, stdout) => {
-      refreshing = false;
-      if (!error && /^\d+\s*$/.test(stdout)) protection.t3 = Number(stdout.trim());
-    });
-  }
-  refreshProtection();
-  const protectionTimer = setInterval(refreshProtection, 30_000);
+  const quit = createQuit({ processes: id => usage.processes(id), online: machine => usage.snapshot(machine, clock(), false).online, exec, local: options.local, mainPid: options.mainPid, watch: options.collect !== false, collectorPids });
+  const usage = new Usage(store.db, machines, quit.protection);
   function state(machine: Machine, now: number, event = false, history = true) {
     const value = event ? usage.event(machine, now) : usage.snapshot(machine, now, history);
     value.vpns = vpn.state(machine.id, value.vpns);
@@ -139,20 +119,9 @@ export function createDashboard(options: { db: string; t3Db?: string; hangar?: s
         for await (const chunk of req) { size += chunk.length; if (size > 64 * 1024) { res.writeHead(400).end(); return; } chunks.push(chunk); }
         let value; try { value = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { res.writeHead(400).end(); return; }
         if (!validQuit(value)) { res.writeHead(400).end(); return; }
-        const machine = machines.find((m: Machine) => m.id === id);
-        if (!machine || (machine.collector !== 'wsl' && !machine.ssh)) { res.writeHead(404).end(); return; }
-        if (!usage.snapshot(machine, clock()).online) { res.writeHead(409).end(); return; }
-        const report = usage.processes(id) ?? {};
-        if (value.app !== undefined ? value.where === 'wsl' : value.targets.some(t => t.where === 'wsl')) {
-          let current: number | null;
-          try { current = await mainPid(); } catch { current = null; }
-          if (current === null || !Number.isSafeInteger(current) || current < 0) { res.writeHead(503).end('Cannot verify the T3 service Process'); return; }
-          protection.t3 = current;
-        }
-        const targets = value.app === undefined ? value.targets : (value.where === 'wsl' ? report.wsl : report.processes ?? [])?.filter(p => p.app === value.app && mayQuit(p, machine, value.where, protection, report.reporterPid)).map(p => ({ pid: p.pid, started: p.started, ...(value.where === 'wsl' ? { where: 'wsl' as const } : {}) })) ?? [];
-        // Each result names the Process it's about (pid plus started token), so the page can follow and Force quit exactly that Process even if the PID is reused.
-        const results = (await quitProcesses(machine, targets, value.force, report, protection, exec, options.local)).map((r, i) => ({ ...r, started: targets[i].started, ...(targets[i].where ? { where: targets[i].where } : {}) }));
-        res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ results })); return;
+        const outcome = await quit.handle(machines.find((m: Machine) => m.id === id), value);
+        if (outcome.status !== 200) { res.writeHead(outcome.status).end('message' in outcome ? outcome.message : ''); return; }
+        res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ results: outcome.results })); return;
       }
       const powerPath = path.match(/^\/api\/machines\/([^/]+)\/power$/);
       if (req.method === 'POST' && powerPath) {
@@ -264,7 +233,7 @@ export function createDashboard(options: { db: string; t3Db?: string; hangar?: s
   const offline = setInterval(tick, 5000);
   const heartbeat = setInterval(() => { for (const stream of streams) stream.write(': heartbeat\n\n'); }, 20_000);
   const stops = options.collect === false ? [] : machines.filter((m: Machine) => m.collector === 'wsl').slice(0, 1).map((m: Machine) => startCollector(m.id, intake));
-  return { server, tick, async idle() { await alerts.idle(); }, async close() { alerts.close(); power.close(); updates.close(); vpn.close(); clearInterval(protectionTimer); clearInterval(offline); clearInterval(heartbeat); stops.forEach((stop: () => void) => stop()); for (const stream of streams) stream.end(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); store.close(); } };
+  return { server, tick, async idle() { await alerts.idle(); }, async close() { alerts.close(); power.close(); updates.close(); vpn.close(); quit.close(); clearInterval(offline); clearInterval(heartbeat); stops.forEach((stop: () => void) => stop()); for (const stream of streams) stream.end(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); store.close(); } };
 }
 function statExists(path: string) { try { statSync(path); return true; } catch { return false; } }
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

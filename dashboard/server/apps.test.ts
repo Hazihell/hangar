@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildApps, mayQuit } from './apps.ts';
+import { buildApps } from './apps.ts';
+import { mayQuit } from './quit.ts';
 import { validQuit } from './rules.ts';
 import { Store } from './store.ts';
 import { Usage, acceptReport } from './usage.ts';

@@ -1,10 +1,21 @@
-import type { Process, Target } from './rules.ts';
+import type { Process, QuitRequest, Report, Target } from './rules.ts';
 import type { Machine } from './store.ts';
-import { mayQuit } from './apps.ts';
-import type { Protection } from './apps.ts';
 import type { Exec } from './vpn.ts';
 import { commandError } from './vpn.ts';
 import { readProc } from './proc.ts';
+import { execFile } from 'node:child_process';
+// The Quit module: which Processes may be quit (policy), which of them a request means (expansion), and the checks each Machine's own adapter makes right before acting.
+export type Protection = { windows?: Set<number>; wsl?: Set<number>; t3?: number };
+const windows = new Set('vmmemwsl vmmem wsl wslhost wslservice wslrelay svchost startmenuexperiencehost shellexperiencehost textinputhost searchhost explorer dwm csrss winlogon ctfmon sihost fontdrvhost runtimebroker tailscale-ipn tailscaled'.split(' '));
+const mac = new Set('windowserver loginwindow dock finder systemuiserver launchd sshd sshd-session tailscaled mac-reporter.sh'.split(' '));
+export const executable = (name: string) => name.toLowerCase().replace(/\.exe$/, '');
+export function mayQuit(p: Process, machine: Machine, where: 'wsl' | undefined, protection: Protection = {}, reporterPid?: number) {
+  if (!p.own || !p.started) return false;
+  const name = executable(p.name);
+  if (where === 'wsl') return p.pid !== 1 && !['systemd', 'init', 'sshd', 'sshd-session', 'tailscaled'].includes(name) && !protection.wsl?.has(p.pid) && p.pid !== protection.t3;
+  if (machine.collector === 'wsl') return !windows.has(name) && !protection.windows?.has(p.pid);
+  return !name.startsWith('sshd') && !mac.has(name) && p.app.toLowerCase() !== 'tailscale' && p.pid !== reporterPid;
+}
 export type Result = { pid: number; result: 'sent' | 'gone' | 'changed' | 'protected' | 'failed'; message?: string };
 export type Local = { read: typeof readProc; quit: (pid: number, signal: 'SIGTERM' | 'SIGKILL') => void; uid: number };
 const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
@@ -134,4 +145,63 @@ export async function quitProcesses(machine: Machine, targets: Target[], force: 
     });
   }
   return results;
+}
+
+export type QuitOptions = {
+  /** The latest Process lists a Machine reported, if any. */
+  processes: (machineId: string) => { processes?: Process[]; wsl?: Process[]; reporterPid?: number } | undefined;
+  online: (machine: Machine) => boolean;
+  exec: Exec;
+  local?: Local;
+  /** The T3 service's main PID, or null if it can't be told. */
+  mainPid?: () => Promise<number | null>;
+  /** Keep T3's PID current on a timer, as well as right before a WSL Quit. */
+  watch: boolean;
+  /** The Windows collector's own PIDs, which may never be quit. */
+  collectorPids?: Set<number>;
+};
+export type Outcome = { status: 200; results: (Result & { started: string; where?: 'wsl' })[] } | { status: 404 | 409 } | { status: 503; message: string };
+const systemctl = () => new Promise<number | null>(resolve => {
+  execFile('systemctl', ['--user', 'show', '-p', 'MainPID', '--value', 't3code.service'], { timeout: 3000, encoding: 'utf8' }, (error, stdout) => resolve(!error && /^\d+\s*$/.test(stdout) ? Number(stdout.trim()) : null));
+});
+/**
+ * Quit for a Dashboard: owns the Protection the Dashboard's Apps are read through, keeps T3's own PID in it current,
+ * and turns a Quit request into one result per Process, each checked against the Machine as it acts.
+ */
+export function createQuit(options: QuitOptions) {
+  const mainPid = options.mainPid ?? systemctl;
+  const ancestors = new Set<number>();
+  let ancestor = process.pid;
+  while (ancestor > 0 && !ancestors.has(ancestor)) { ancestors.add(ancestor); try { ancestor = readProc(ancestor)?.ppid ?? 0; } catch { break; } }
+  const protection: Protection = { windows: options.collectorPids ?? new Set(), wsl: ancestors };
+  const valid = (pid: number | null): pid is number => pid !== null && Number.isSafeInteger(pid) && pid >= 0;
+  let refreshing = false;
+  function refresh() {
+    if (refreshing || !options.watch) return;
+    refreshing = true;
+    Promise.resolve().then(mainPid).then(pid => { if (valid(pid)) protection.t3 = pid; }, () => {}).finally(() => { refreshing = false; });
+  }
+  refresh();
+  const timer = setInterval(refresh, 30_000);
+  return {
+    /** What the Dashboard reads Apps through; this module keeps it current. */
+    protection,
+    /** Quits what `request` means on `machine`; 404 if it can't be quit from here, 409 if Offline, 503 if T3's PID can't be verified for WSL. */
+    async handle(machine: Machine | undefined, request: QuitRequest): Promise<Outcome> {
+      if (!machine || (machine.collector !== 'wsl' && !machine.ssh)) return { status: 404 };
+      if (!options.online(machine)) return { status: 409 };
+      const report = options.processes(machine.id) ?? {};
+      if (request.app !== undefined ? request.where === 'wsl' : request.targets.some(t => t.where === 'wsl')) {
+        let current: number | null;
+        try { current = await mainPid(); } catch { current = null; }
+        if (!valid(current)) return { status: 503, message: 'Cannot verify the T3 service Process' };
+        protection.t3 = current;
+      }
+      const targets: Target[] = request.app === undefined ? request.targets : (request.where === 'wsl' ? report.wsl : report.processes ?? [])?.filter(p => p.app === request.app && mayQuit(p, machine, request.where, protection, report.reporterPid)).map(p => ({ pid: p.pid, started: p.started, ...(request.where === 'wsl' ? { where: 'wsl' as const } : {}) })) ?? [];
+      // Each result names the Process it's about (pid plus started token), so the page can follow and Force quit exactly that Process even if the PID is reused.
+      const results = (await quitProcesses(machine, targets, request.force, report, protection, options.exec, options.local)).map((r, i) => ({ ...r, started: targets[i].started, ...(targets[i].where ? { where: targets[i].where } : {}) }));
+      return { status: 200, results };
+    },
+    close() { clearInterval(timer); },
+  };
 }

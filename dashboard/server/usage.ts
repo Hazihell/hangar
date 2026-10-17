@@ -1,5 +1,5 @@
 import { buildApps, minuteApps, top } from './apps.ts';
-import type { Protection } from './apps.ts';
+import type { Protection } from './quit.ts';
 import type { DatabaseSync } from 'node:sqlite';
 import { cutoff, finite, minute, object, online, pid, text, token } from './rules.ts';
 import type { Process, Vpn } from './rules.ts';
