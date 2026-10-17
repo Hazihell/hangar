@@ -2,7 +2,7 @@ import { spawn, execFile } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import type { Process } from './rules.ts';
-import { validReport } from './rules.ts';
+import { acceptReport } from './usage.ts';
 import { createProcCollector } from './proc.ts';
 export const collectorPids = new Set<number>();
 // Kept as a script fragment so collector behavior can be exercised with stubbed OS results.
@@ -102,9 +102,9 @@ function gpuTemperature(output: string) {
 function reportFromLine(line: string, machine: string, t3: boolean, gpu?: number) {
   const value = JSON.parse(line.replace(/^\uFEFF/, ''));
   const temps = { ...value.temps, ...(gpu === undefined ? {} : { gpu }) };
-  const report = { ...value, machine, services: { t3 }, ...(Object.keys(temps).length ? { temps } : {}),
-    disks: Array.isArray(value.disks) ? value.disks.filter((d: any) => d.total !== 0) : value.disks };
-  if (!validReport(report)) throw new Error('invalid Usage');
+  const report = acceptReport({ ...value, machine, services: { t3 }, ...(Object.keys(temps).length ? { temps } : {}),
+    disks: Array.isArray(value.disks) ? value.disks.filter((d: any) => d.total !== 0) : value.disks });
+  if (!report) throw new Error('invalid Usage');
   return report;
 }
 /** A command's output, or null if it is missing, fails or takes over 3 s. */

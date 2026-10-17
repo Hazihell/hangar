@@ -1,4 +1,5 @@
-import type { Process, Report } from './rules.ts';
+import type { Process } from './rules.ts';
+import type { Report } from './usage.ts';
 import type { Machine } from './store.ts';
 export type Protection = { windows?: Set<number>; wsl?: Set<number>; t3?: number };
 export type App = { name: string; cpu: number; ram: number; count: number; quit: boolean; processes: { pid: number; name: string; cpu: number; ram: number; started: string; quit: boolean }[]; apps?: App[] };

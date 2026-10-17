@@ -1,6 +1,7 @@
 import { createPower } from './power.ts';
 import { createUpdates, detachedExec } from './updates.ts';
 import { mayQuit } from './apps.ts';
+import type { Protection } from './apps.ts';
 import { quitProcesses } from './quit.ts';
 import type { Local } from './quit.ts';
 import { readProc } from './proc.ts';
@@ -16,7 +17,8 @@ import { homedir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Store } from './store.ts';
 import type { Machine } from './store.ts';
-import { validReport, validQuit } from './rules.ts';
+import { Usage } from './usage.ts';
+import { validQuit } from './rules.ts';
 import { startCollector, collectorPids } from './collector.ts';
 import { createAlerts, loadRules, tempLimits } from './alerts.ts';
 import type { Rules } from './alerts.ts';
@@ -36,7 +38,7 @@ function dashboardHosts() {
 }
 export function createDashboard(options: { db: string; t3Db?: string; hangar?: string; updateChecks?: boolean; kill?: (pid: number, signal: 'SIGTERM' | 'SIGKILL') => void; machines?: Machine[]; clock?: () => number; collect?: boolean; dist?: string; exec?: Exec; local?: Local; rules?: Rules; vapid?: string; fetch?: FetchLike; hosts?: string[]; mainPid?: () => Promise<number | null> }) {
   const machines = options.machines ?? JSON.parse(readFileSync(resolve(root, 'machines.json'), 'utf8'));
-  const store = new Store(options.db, machines), clock = options.clock ?? Date.now;
+  const store = new Store(options.db), clock = options.clock ?? Date.now;
   const configuredHosts = () => options.hosts ?? dashboardHosts();
   const mainPid = options.mainPid ?? (() => new Promise<number | null>(resolve => {
     execFile('systemctl', ['--user', 'show', '-p', 'MainPID', '--value', 't3code.service'], { timeout: 3000, encoding: 'utf8' }, (error, stdout) => resolve(!error && /^\d+\s*$/.test(stdout) ? Number(stdout.trim()) : null));
@@ -48,29 +50,30 @@ export function createDashboard(options: { db: string; t3Db?: string; hangar?: s
   const ancestors = new Set<number>();
   let ancestor = process.pid;
   while (ancestor > 0 && !ancestors.has(ancestor)) { ancestors.add(ancestor); try { ancestor = readProc(ancestor)?.ppid ?? 0; } catch { break; } }
-  store.protection = { windows: collectorPids, wsl: ancestors };
+  const protection: Protection = { windows: collectorPids, wsl: ancestors };
+  const usage = new Usage(store.db, machines, protection);
   let refreshing = false;
   function refreshProtection() {
     if (refreshing || options.collect === false) return;
     refreshing = true;
     exec('systemctl', ['--user', 'show', '-p', 'MainPID', '--value', 't3code.service'], { timeout: 3000, encoding: 'utf8' }, (error, stdout) => {
       refreshing = false;
-      if (!error && /^\d+\s*$/.test(stdout)) store.protection.t3 = Number(stdout.trim());
+      if (!error && /^\d+\s*$/.test(stdout)) protection.t3 = Number(stdout.trim());
     });
   }
   refreshProtection();
   const protectionTimer = setInterval(refreshProtection, 30_000);
   function state(machine: Machine, now: number, event = false, history = true) {
-    const value = event ? store.event(machine, now) : store.snapshot(machine, now, history);
+    const value = event ? usage.event(machine, now) : usage.snapshot(machine, now, history);
     value.vpns = vpn.state(machine.id, value.vpns);
     if (machine.collector === 'wsl') Object.assign(value, { power: power.state(machine.id) });
     Object.assign(value, { updates: updates.state(machine), tempLimits: tempLimits(rules, machine.id) });
     return value;
   }
-  const vpn = createVpn({ exec, clock, vpns: id => store.vpns(id), online: (machine, now) => store.snapshot(machine, now, false).online, emit: (machine, now) => emit(machine, now), started: now => evaluateAlerts(now) });
+  const vpn = createVpn({ exec, clock, vpns: id => usage.vpns(id), online: (machine, now) => usage.snapshot(machine, now, false).online, emit: (machine, now) => emit(machine, now), started: now => evaluateAlerts(now) });
   const power = createPower(exec, clock, (machine, now) => emit(machine, now), () => observeSuspension(clock()), now => { alerts.recover(now); power.resume(now); });
   const updates = createUpdates({ machines, exec: options.exec ?? detachedExec, clock, hangar: options.hangar ?? resolve(root, '../bin/hangar'), t3Db: options.t3Db ?? join(process.env.T3CODE_HOME ?? join(homedir(), '.t3'), 'userdata/statev2.sqlite'),
-    schedule: options.updateChecks ?? options.collect !== false, kill: options.kill, online: machine => store.snapshot(machine, clock(), false).online, emit: (machine, now) => emit(machine, now) });
+    schedule: options.updateChecks ?? options.collect !== false, kill: options.kill, online: machine => usage.snapshot(machine, clock(), false).online, emit: (machine, now) => emit(machine, now) });
   const rules = options.rules ?? loadRules(resolve(root, 'alerts.json'));
   const alerts = createAlerts({ db: store.db, dbPath: options.db, rules, vapid: options.vapid, fetch: options.fetch, clock, startedAt });
   function evaluateAlerts(now: number, completedDisconnects: { machine: string; vpn: string }[] = []) {
@@ -87,27 +90,20 @@ export function createDashboard(options: { db: string; t3Db?: string; hangar?: s
     return built.id;
   }
   buildId();
-  for (const m of machines) statuses.set(m.id, store.snapshot(m, clock()).online);
+  for (const m of machines) statuses.set(m.id, usage.snapshot(m, clock()).online);
   function emit(machine: Machine, now: number) {
     const event = state(machine, now, true);
     statuses.set(machine.id, event.online);
     for (const stream of streams) stream.write(`event: machine\ndata: ${JSON.stringify(event)}\n\n`);
   }
   function intake(value: unknown) {
-    if (!validReport(value)) return 400;
-    const m = machines.find((m: Machine) => m.id === value.machine);
-    if (!m) return 404;
-    const report = { ...(value.processes === undefined ? {} : { processes: value.processes }), ...(value.wsl === undefined ? {} : { wsl: value.wsl }), ...(value.reporterPid === undefined ? {} : { reporterPid: value.reporterPid }), machine: value.machine, cpu: value.cpu, ram: { used: value.ram.used, total: value.ram.total },
-      disks: value.disks.map(d => ({ name: d.name, used: d.used, total: d.total })),
-      ...(value.services === undefined ? {} : { services: value.services }),
-      ...(value.temps === undefined ? {} : { temps: value.temps }),
-      ...(value.vpns === undefined ? {} : { vpns: value.vpns.map(v => ({ name: v.name, status: v.status, kind: v.kind })) }) };
     const now = clock();
-    observeSuspension(now);
-    try { store.intake(report, now); } catch (error) { console.error('Dashboard intake:', error); return 500; }
+    // A rejected report says nothing about the Machine or about a suspension of the Dashboard, so only an accepted one is checked for a resume.
+    const result = usage.intake(value, now, () => observeSuspension(now));
+    if (result.status !== 204) return result.status;
     // The report that shows a disconnect done also clears `pending`; the Alerts must hear of it first.
-    const completed = vpn.reconcile(m, report.vpns);
-    emit(m, now); evaluateAlerts(now, completed); return 204;
+    const completed = vpn.reconcile(result.machine, result.report.vpns);
+    emit(result.machine, now); evaluateAlerts(now, completed); return 204;
   }
   const server = createServer(async (req, res) => {
     try {
@@ -132,7 +128,7 @@ export function createDashboard(options: { db: string; t3Db?: string; hangar?: s
       const minutePath = path.match(/^\/api\/machines\/([^/]+)\/minutes\/([^/]+)$/);
       if ((req.method === 'GET' || req.method === 'HEAD') && minutePath) {
         let id, t; try { id = decodeURIComponent(minutePath[1]); t = decodeURIComponent(minutePath[2]); } catch { res.writeHead(400).end(); return; }
-        const value = machines.some((m: Machine) => m.id === id) ? store.topApps(id, t, clock()) : null;
+        const value = machines.some((m: Machine) => m.id === id) ? usage.topApps(id, t, clock()) : null;
         res.writeHead(value ? 200 : 404, { 'Content-Type': 'application/json' }).end(value ? JSON.stringify(value) : ''); return;
       }
       const quitPath = path.match(/^\/api\/machines\/([^/]+)\/quit$/);
@@ -145,17 +141,17 @@ export function createDashboard(options: { db: string; t3Db?: string; hangar?: s
         if (!validQuit(value)) { res.writeHead(400).end(); return; }
         const machine = machines.find((m: Machine) => m.id === id);
         if (!machine || (machine.collector !== 'wsl' && !machine.ssh)) { res.writeHead(404).end(); return; }
-        if (!store.snapshot(machine, clock()).online) { res.writeHead(409).end(); return; }
-        const report = store.processes.get(id) ?? {};
+        if (!usage.snapshot(machine, clock()).online) { res.writeHead(409).end(); return; }
+        const report = usage.processes(id) ?? {};
         if (value.app !== undefined ? value.where === 'wsl' : value.targets.some(t => t.where === 'wsl')) {
           let current: number | null;
           try { current = await mainPid(); } catch { current = null; }
           if (current === null || !Number.isSafeInteger(current) || current < 0) { res.writeHead(503).end('Cannot verify the T3 service Process'); return; }
-          store.protection.t3 = current;
+          protection.t3 = current;
         }
-        const targets = value.app === undefined ? value.targets : (value.where === 'wsl' ? report.wsl : report.processes ?? [])?.filter(p => p.app === value.app && mayQuit(p, machine, value.where, store.protection, report.reporterPid)).map(p => ({ pid: p.pid, started: p.started, ...(value.where === 'wsl' ? { where: 'wsl' as const } : {}) })) ?? [];
+        const targets = value.app === undefined ? value.targets : (value.where === 'wsl' ? report.wsl : report.processes ?? [])?.filter(p => p.app === value.app && mayQuit(p, machine, value.where, protection, report.reporterPid)).map(p => ({ pid: p.pid, started: p.started, ...(value.where === 'wsl' ? { where: 'wsl' as const } : {}) })) ?? [];
         // Each result names the Process it's about (pid plus started token), so the page can follow and Force quit exactly that Process even if the PID is reused.
-        const results = (await quitProcesses(machine, targets, value.force, report, store.protection, exec, options.local)).map((r, i) => ({ ...r, started: targets[i].started, ...(targets[i].where ? { where: targets[i].where } : {}) }));
+        const results = (await quitProcesses(machine, targets, value.force, report, protection, exec, options.local)).map((r, i) => ({ ...r, started: targets[i].started, ...(targets[i].where ? { where: targets[i].where } : {}) }));
         res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ results })); return;
       }
       const powerPath = path.match(/^\/api\/machines\/([^/]+)\/power$/);
@@ -169,7 +165,7 @@ export function createDashboard(options: { db: string; t3Db?: string; hangar?: s
         const machine = machines.find((m: Machine) => m.id === id);
         if (!machine || machine.collector !== 'wsl') { res.writeHead(404).end(); return; }
         const now = clock(); observeSuspension(now);
-        if (!store.snapshot(machine, now).online || power.state(id).pending) { res.writeHead(409).end(); return; }
+        if (!usage.snapshot(machine, now).online || power.state(id).pending) { res.writeHead(409).end(); return; }
         power.start(machine, value.action, now);
         res.writeHead(202, { 'Content-Type': 'application/json' }).end(JSON.stringify(power.state(id))); return;
       }
@@ -230,7 +226,7 @@ export function createDashboard(options: { db: string; t3Db?: string; hangar?: s
       }
       const read = req.method === 'GET' || req.method === 'HEAD'; // node sends no body for HEAD
       if (read && path === '/api/machines') {
-        const now = clock(); store.prune(now);
+        const now = clock(); usage.prune(now);
         res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ now: new Date(now).toISOString(), build: buildId(), machines: machines.map((m: Machine) => state(m, now)) })); return;
       }
       if (req.method === 'GET' && path === '/api/events') {
@@ -261,8 +257,8 @@ export function createDashboard(options: { db: string; t3Db?: string; hangar?: s
     lastObservedAt = now;
   }
   function tick() {
-    const now = clock(); observeSuspension(now); power.tick(now); updates.tick(now); vpn.tick(now); store.prune(now);
-    for (const m of machines) if (statuses.get(m.id) && !store.snapshot(m, now).online) emit(m, now);
+    const now = clock(); observeSuspension(now); power.tick(now); updates.tick(now); vpn.tick(now); usage.prune(now);
+    for (const m of machines) if (statuses.get(m.id) && !usage.snapshot(m, now).online) emit(m, now);
     evaluateAlerts(now);
   }
   const offline = setInterval(tick, 5000);

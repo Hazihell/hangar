@@ -4,7 +4,7 @@ import { readFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createDashboard } from './server.ts';
-import { validReport } from './rules.ts';
+import { Usage, acceptReport } from './usage.ts';
 import { createVpn } from './vpn.ts';
 import type { Exec } from './vpn.ts';
 import { Store } from './store.ts';
@@ -30,23 +30,23 @@ async function fixture(t: any, throws = false) {
   return { app, base, calls, post, send, command, get, setNow: (value: number) => { now = value; }, advance: (ms: number) => { now += ms; app.tick(); } };
 }
 test('VPN validation accepts only bounded names, four statuses and known kinds', () => {
-  for (const status of ['connected', 'disconnected', 'connecting', 'disconnecting']) assert.equal(validReport({ ...report, vpns: [{ ...vpn, status }] }), true);
-  assert.equal(validReport({ ...report, vpns: [] }), true);
-  assert.equal(validReport({ ...report, vpns: [{ ...vpn, name: 'a'.repeat(256), kind: 'other' }] }), true);
-  for (const vpns of [null, {}, [null], [{}], [{ ...vpn, name: '' }], [{ ...vpn, name: 'a'.repeat(257) }], [{ ...vpn, name: 1 }], [{ ...vpn, status: 'invalid' }], [{ ...vpn, kind: 'l2tp' }]]) assert.equal(validReport({ ...report, vpns }), false);
+  for (const status of ['connected', 'disconnected', 'connecting', 'disconnecting']) assert.ok(acceptReport({ ...report, vpns: [{ ...vpn, status }] }));
+  assert.ok(acceptReport({ ...report, vpns: [] }));
+  assert.ok(acceptReport({ ...report, vpns: [{ ...vpn, name: 'a'.repeat(256), kind: 'other' }] }));
+  for (const vpns of [null, {}, [null], [{}], [{ ...vpn, name: '' }], [{ ...vpn, name: 'a'.repeat(257) }], [{ ...vpn, name: 1 }], [{ ...vpn, status: 'invalid' }], [{ ...vpn, kind: 'l2tp' }]]) assert.equal(acceptReport({ ...report, vpns }), null);
 });
 test('VPNs persist across restart, omitted lists retain known VPNs, and empty lists clear them', t => {
   const dir = mkdtempSync(join(tmpdir(), 'hangar-vpn-')); t.after(() => rmSync(dir, { recursive: true }));
   const db = join(dir, 'test.db');
-  let store = new Store(db, machines);
-  store.intake({ ...report, vpns: [vpn] }, 1); store.intake(report, 2); store.close();
-  store = new Store(db, machines);
+  let store = new Store(db), usage = new Usage(store.db, machines);
+  usage.intake({ ...report, vpns: [vpn] }, 1); usage.intake(report, 2); store.close();
+  store = new Store(db); usage = new Usage(store.db, machines);
   try {
-    const state = store.snapshot(machines[0], 3);
+    const state = usage.snapshot(machines[0], 3);
     assert.deepEqual(state.vpns, [{ name: vpn.name, status: 'disconnected', pending: null, error: null }]);
     assert.equal('vpns' in state.usage!, false);
-    assert.equal('ssh' in store.snapshot(machines[1], 3), false);
-    store.intake({ ...report, vpns: [] }, 4); assert.deepEqual(store.snapshot(machines[0], 4).vpns, []);
+    assert.equal('ssh' in usage.snapshot(machines[1], 3), false);
+    usage.intake({ ...report, vpns: [] }, 4); assert.deepEqual(usage.snapshot(machines[0], 4).vpns, []);
   } finally { store.close(); }
 });
 test('PC VPN commands pass exact safe arguments and wait for reports after successful execution', async t => {
@@ -140,7 +140,7 @@ test('VPN confirmation deadline fires at 90 seconds with fake timers', async t =
 
 test('VPN names reject Windows switches, quoting and control characters', () => {
   for (const name of ['-entry', '/entry', 'a"b', 'a\nb', 'a\rb', 'a\tb', 'a\0b', 'a\x7fb', 'a\u0085b'])
-    assert.equal(validReport({ ...report, vpns: [{ ...vpn, name }] }), false, JSON.stringify(name));
+    assert.equal(acceptReport({ ...report, vpns: [{ ...vpn, name }] }), null, JSON.stringify(name));
 });
 test('synchronous exec failure is reported', async t => {
   const f = await fixture(t, true); await f.send();
