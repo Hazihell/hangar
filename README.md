@@ -71,4 +71,8 @@ The PC collects Windows Usage from WSL; the Mac sends a report every ten seconds
 
 The Dashboard lists OS-managed VPNs (excluding Tailscale) and can connect or disconnect each one. Mac VPN control requires Remote Login enabled and the PC user’s SSH key in the Mac user’s `authorized_keys`; `hangar doctor` checks this connection.
 
+The Dashboard lists Apps and their Processes, keeps Top Apps for each History minute, and can Quit your unprotected Processes or Force quit them when needed.
+
+The Dashboard sends Alerts as browser push notifications for full disks, sustained high CPU or RAM, dropped VPNs, a stopped T3 service and an Offline PC; rules are in `dashboard/alerts.json`, and the VAPID key sits beside the database as `vapid.json`.
+
 Run `npm test --prefix dashboard/server` and `dashboard/reporter/parser-tests.sh` to check the server and Mac parsers. The server needs no npm dependencies or build step.

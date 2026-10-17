@@ -1,0 +1,9 @@
+{
+  "disk": { "at": 90, "clear": 85 },
+  "cpu": { "at": 90, "clear": 80, "for": 300 },
+  "ram": { "at": 90, "clear": 85, "for": 300 },
+  "offline": { "for": 120, "machines": ["stormtrooper"] },
+  "vpn": true,
+  "t3": true,
+  "cooldown": 1800
+}

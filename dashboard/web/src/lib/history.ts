@@ -27,6 +27,8 @@ export function mergeEvent(machines: Machine[], event: MachineEvent, now: number
     // Events carry the full Machine, VPNs included; one without them (an older
     // server) keeps what we had, while an explicit [] clears them.
     vpns: fields.vpns ?? current?.vpns ?? [],
+    // Same for Apps: a missing field keeps them, an explicit null clears them.
+    apps: fields.apps === undefined ? (current?.apps ?? null) : fields.apps,
     history: minute
       ? withMinute(current?.history ?? [], minute, now)
       : (current?.history ?? []),
@@ -48,7 +50,8 @@ function withMinute(history: HistoryPoint[], minute: HistoryPoint, now: number) 
 
 export type TracePoint = { x: number; cpu: number | null; ram: number | null; disk: number | null }
 
-const BUCKET = 10 * 60 * 1000
+/** The width of one point on a trace: 10 minutes. */
+export const BUCKET = 10 * 60 * 1000
 
 /**
  * History thinned for a small trace: 10-minute averages, a break wherever a

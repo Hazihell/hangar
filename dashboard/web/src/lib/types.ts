@@ -33,6 +33,44 @@ export type Vpn = {
   error: { message: string; at: string } | null
 }
 
+/** A Process as the Dashboard lists it under its App. */
+export type AppProcess = {
+  pid: number
+  /** The executable's base name. */
+  name: string
+  /** Percent of the whole Machine. */
+  cpu: number
+  /** Bytes resident. */
+  ram: number
+  /** Opaque; changes if the PID is reused. */
+  started: string
+  /** Whether the Dashboard may Quit it. */
+  quit: boolean
+}
+
+/** The Processes of one program, counted together (API.md `apps`). */
+export type App = {
+  name: string
+  cpu: number
+  ram: number
+  /** Processes in the App; `processes` lists at most 20 of them. */
+  count: number
+  /** Whether any of its Processes may be quit. */
+  quit: boolean
+  processes: AppProcess[]
+  /** Only on the PC's `WSL` App: the Apps inside WSL. */
+  apps?: App[]
+}
+
+export type Apps = { at: string; list: App[] }
+
+/** Inside WSL, or on the Machine itself. */
+export type Where = "wsl" | undefined
+
+export type MinuteApp = { name: string; where?: "wsl"; cpu: number; ram: number }
+
+export type MinuteResponse = { t: string; apps: MinuteApp[] }
+
 export type Machine = {
   id: string
   name: string
@@ -42,13 +80,17 @@ export type Machine = {
   usage: Usage | null
   /** From the latest report; `[]` if none. */
   vpns: Vpn[]
+  /** `null` until the Machine has sent Processes. */
+  apps: Apps | null
   history: HistoryPoint[]
 }
 
 export type MachinesResponse = { now: string; machines: Machine[] }
 
 /** Data of a `machine` server-sent event. */
-export type MachineEvent = Omit<Machine, "history"> & {
+export type MachineEvent = Omit<Machine, "history" | "apps"> & {
+  /** Absent from an older server's events: keep what we had. */
+  apps?: Apps | null
   minute?: HistoryPoint | null
 }
 
