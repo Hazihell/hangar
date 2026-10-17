@@ -24,6 +24,8 @@ Third-party skills keep their upstream licenses; see [THIRD_PARTY.md](THIRD_PART
 hangar sync      # after changing a skill or setting on any machine
 hangar doctor    # when something seems off
 hangar update    # Claude Code, Codex, installed skills, T3 Code, gh and tea
+hangar outdated  # which of those have a newer version (the Dashboard shows the same)
+hangar update claude gh   # just those; ids: t3 claude codex gh tea hangar
 tests/sync-tests.sh   # after changing bin/hangar: tests it in scratch home folders
 ```
 
@@ -72,6 +74,8 @@ The PC collects Windows Usage from WSL; the Mac sends a report every ten seconds
 The Dashboard lists OS-managed VPNs (excluding Tailscale) and can connect or disconnect each one. Mac VPN control requires Remote Login enabled and the PC user’s SSH key in the Mac user’s `authorized_keys`; `hangar doctor` checks this connection.
 
 The Dashboard lists Apps and their Processes, keeps Top Apps for each History minute, and can Quit your unprotected Processes or Force quit them when needed.
+
+The Dashboard checks each Machine for newer versions of T3 Code, Claude Code, Codex, gh, tea and Hangar itself (`hangar outdated`, every 6 hours) and can run any of those Updates (`hangar update <id>`); the Mac is reached over the same SSH as its VPNs and needs a `hangar` that has `outdated`, so run `hangar sync` there after this lands. Skills stay with `hangar update` in a terminal.
 
 The Dashboard sends Alerts as browser push notifications for full disks, sustained high CPU or RAM, dropped VPNs, a stopped T3 service and an Offline PC; rules are in `dashboard/alerts.json`, and the VAPID key sits beside the database as `vapid.json`.
 

@@ -60,9 +60,16 @@ add_gh_repo() { # GitHub's own apt source: Ubuntu's gh package lags far behind
       sudo tee "$list" >/dev/null
 }
 
+tea_latest_tag() { # newest Gitea CLI release tag, e.g. v0.16.0
+  local tag
+  tag="$(curl -fsSL --max-time 15 https://gitea.com/api/v1/repos/gitea/tea/releases/latest |
+    sed -n 's/.*"tag_name":"\([^"]*\)".*/\1/p' | head -n 1)" || return 1
+  [ -n "$tag" ] && printf '%s\n' "$tag"
+}
+
 install_tea() { # latest Gitea CLI into ~/.local/bin, checked against its published checksum; it has no apt source
   local tag ver cur arch f url tmp rc=0
-  tag="$(curl -fsSL https://gitea.com/api/v1/repos/gitea/tea/releases/latest | jq -r .tag_name)" || return 1
+  tag="$(tea_latest_tag)" || return 1
   ver="${tag#v}"
   cur="$(tea --version 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' | awk '{print $2; exit}' || true)"
   if [ "$cur" = "$ver" ]; then ok "tea $ver"; return 0; fi
@@ -93,7 +100,12 @@ backup() { # move a path aside before replacing it; one folder per run
 
 # ── Dashboard ─────────────────────────────────────────────────────────────────
 dashboard_node() {
-  local major
+  local major unit="$HOME/.config/systemd/user/hangar-dashboard.service" n
+  if ! command -v node >/dev/null && [ -f "$unit" ]; then
+    # The service's PATH is bare: borrow the node its own unit runs, and the npm beside it.
+    n="$(sed -n 's/^ExecStart="\([^"]*\)".*/\1/p' "$unit" | head -n 1)"
+    if [ -x "$n" ]; then PATH="$(dirname "$n"):$PATH"; export PATH; fi
+  fi
   if ! command -v node >/dev/null; then bad "Dashboard needs Node 24 or newer; install Node first"; return 1; fi
   major="$(node -p 'process.versions.node.split(".")[0]')" || return 1
   if [ "$major" -lt 24 ]; then bad "Dashboard needs Node 24 or newer (found $major)"; return 1; fi
@@ -405,34 +417,337 @@ cmd_doctor() {
   else say "${G}All good.${N}"; fi
 }
 
+# ── updates ───────────────────────────────────────────────────────────────────
+# What `update` and `outdated` know how to handle, in the order they're listed.
+ITEM_IDS="t3 claude codex gh tea hangar"
+item_name() {
+  case "$1" in
+    t3) echo "T3 Code" ;; claude) echo "Claude Code" ;; codex) echo "Codex" ;;
+    gh) echo "GitHub CLI" ;; tea) echo "Gitea CLI" ;; hangar) echo "Hangar" ;;
+  esac
+}
+item_installed() { if [ "$1" = hangar ]; then return 0; else command -v "$1" >/dev/null 2>&1; fi; }
+
+# A terminal has these on PATH; the Dashboard's service and a bare SSH command don't.
+tool_path() {
+  PATH="$HOME/.local/bin:$PATH"
+  if [ "$OS" = Darwin ]; then PATH="/opt/homebrew/bin:/opt/homebrew/sbin:$PATH"; fi
+  export PATH
+}
+
+descendants() { # descendants <pid>: its children, their children and so on
+  local c
+  for c in $(pgrep -P "$1" 2>/dev/null || true); do echo "$c"; descendants "$c"; done
+}
+kill_tree() { # kill_tree <signal> <pid>: the process, everything under it, and its process group if it leads one
+  local sig="$1" pid="$2" all p
+  all="$pid $(descendants "$pid")"   # listed first: once the parent dies, its children are reparented out of sight
+  if [ "$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')" = "$pid" ]; then kill -s "$sig" -- "-$pid" 2>/dev/null || true; fi
+  for p in $all; do kill -s "$sig" "$p" 2>/dev/null || true; done
+}
+run_limit() { # run_limit <seconds> <command...>: stop the whole command tree if it runs longer (KILL after a 2 s grace); prints its output, keeps its exit code
+  local secs="$1" out pid watcher rc
+  shift
+  out="$(mktemp)"
+  # Output goes to a file, so a descendant that outlives the deadline can't hold up whoever reads it.
+  set -m   # a background job gets its own process group
+  "$@" > "$out" < /dev/null & pid=$!
+  set +m
+  ( sleep "$secs"; kill_tree TERM "$pid"; sleep 2; kill_tree KILL "$pid" ) > /dev/null 2>&1 &
+  watcher=$!
+  wait "$pid" 2>/dev/null && rc=0 || rc=$?
+  kill_tree KILL "$watcher"
+  wait "$watcher" 2>/dev/null || true
+  cat "$out"; rm -f "$out"
+  return "$rc"
+}
+
+fetch() { curl -fsSL --max-time 12 "$@"; }
+ESC=$'\033'
+
+newer() { # newer <a> <b>: prints 1 if version a is newer than b, comparing their numbers in order
+  awk -v a="$1" -v b="$2" 'BEGIN {
+    na = split(a, x, /[^0-9]+/); nb = split(b, y, /[^0-9]+/); n = (na > nb ? na : nb)
+    for (i = 1; i <= n; i++) { p = x[i] + 0; q = y[i] + 0; if (p > q) { print 1; exit } if (p < q) { print 0; exit } }
+    print 0 }'
+}
+
+clean_version() { # one plain version word, or nothing
+  local v; v="$(printf '%s' "$1" | tr -d '\r' | awk 'NR == 1 {print $1}')"
+  v="${v#v}"
+  case "$v" in '' | *[!0-9A-Za-z.+~_-]*) return 0 ;; esac
+  printf '%s' "$v"
+}
+
+installed_version() {
+  local out
+  case "$1" in
+    claude) out="$(run_limit 15 claude --version 2>/dev/null | awk 'NR == 1 {print $1}')" ;;
+    codex) out="$(run_limit 15 codex --version 2>/dev/null | awk 'NR == 1 {print $2}')" ;;
+    t3) out="$(run_limit 15 t3 --version 2>/dev/null | awk 'NR == 1 {print $2}')" ;;
+    gh) out="$(run_limit 15 gh --version 2>/dev/null | awk 'NR == 1 {print $3}')" ;;
+    tea) out="$(run_limit 15 tea --version 2>/dev/null | sed "s/$ESC\[[0-9;]*m//g" | awk 'NR == 1 {print $2}')" ;;
+  esac
+  clean_version "$out"
+}
+
+# The newest version each tool's own updater would install.
+latest_claude() { # the release channel Claude Code follows: settings' autoUpdatesChannel (stable or latest), default latest
+  local channel
+  channel="$(sed -n 's/.*"autoUpdatesChannel"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p' "$SETTINGS_LIVE" 2>/dev/null | head -n 1)" || true
+  [ "$channel" = stable ] || channel=latest
+  fetch "https://downloads.claude.ai/claude-code-releases/$channel"
+}
+latest_codex() { # `codex update` runs OpenAI's installer, which takes the newest rust-v tag
+  local body tag
+  for body in https://releases.openai.com/codex/channels/latest https://api.github.com/repos/openai/codex/releases/latest; do
+    tag="$(fetch "$body" 2>/dev/null | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"rust-v\([^"]*\)".*/\1/p' | head -n 1)" || true
+    if [ -n "$tag" ]; then printf '%s' "$tag"; return 0; fi
+  done
+  return 1
+}
+latest_t3() { # as `t3 update` does: newest GitHub release on the channel this t3 was published on
+  local current="$1" re page found
+  case "$current" in
+    *-nightly.*) re='^v[0-9]+\.[0-9]+\.[0-9]+-nightly\.[0-9]+\.[0-9]+$' ;;
+    *-preview.*) re='^v[0-9]+\.[0-9]+\.[0-9]+-preview\.[0-9]+\.[0-9]+$' ;;
+    *) re='^v[0-9]+\.[0-9]+\.[0-9]+$' ;;
+  esac
+  for page in 1 2 3; do
+    found="$(fetch "https://api.github.com/repos/pingdotgg/t3code/releases?per_page=100&page=$page" 2>/dev/null |
+      sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | RE="$re" awk '!f && $0 ~ ENVIRON["RE"] {print; f = 1}')" || true
+    if [ -n "$found" ]; then printf '%s' "$found"; return 0; fi
+  done
+  return 1
+}
+latest_gh_apt() { # apt's candidate, after refreshing the indexes when sudo allows it without asking
+  if sudo -n true 2>/dev/null; then run_limit 40 sudo -n apt-get update -q >/dev/null 2>&1 || true; fi
+  apt-cache policy gh 2>/dev/null | awk '/Candidate:/ {print $2; exit}' | sed -E 's/^[0-9]+://; s/-.*$//; s/^\(none\)$//'
+}
+
+blocked_gh() { # the Dashboard has no terminal to type a sudo password into
+  if [ "$OS" = Linux ] && ! sudo -n true 2>/dev/null; then echo "Needs sudo; run 'hangar update' on the PC"; fi
+}
+blocked_hangar() {
+  local branch
+  branch="$(git -C "$REPO" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+  if [ "$branch" != main ]; then echo "Checkout is on '${branch:-?}', not main"
+  elif [ -n "$(git -C "$REPO" status --porcelain 2>/dev/null)" ]; then echo "Local changes in the checkout; run 'hangar sync'"
+  elif [ "$(git -C "$REPO" rev-list --count origin/main..HEAD 2>/dev/null || echo 0)" != 0 ]; then echo "Local commits not on origin/main; run 'hangar sync'"; fi
+}
+
+# One record per line: id, current, latest, available, blocked, behind, separated by the ASCII unit separator
+# (git branch names, which end up in `blocked`, can hold any printable character but not control ones).
+record() { # record <id> <current> <latest> [behind]; blocked only matters for an update that could run
+  local id="$1" cur="$2" latest="$3" behind="${4:-}" avail=false blocked=""
+  case "$behind" in '' | *[!0-9]*) behind="" ;; esac
+  if [ "$id" = hangar ]; then
+    if [ -n "$behind" ] && [ "$behind" -gt 0 ]; then avail=true; fi
+  elif [ -n "$cur" ] && [ -n "$latest" ] && [ "$(newer "$latest" "$cur")" = 1 ]; then avail=true; fi
+  if [ "$avail" = true ]; then
+    case "$id" in gh | hangar) blocked="$(blocked_"$id" | head -n 1)" ;; esac
+  fi
+  blocked="$(printf '%s' "$blocked" | tr -d '\000-\037')"
+  printf '%s\037%s\037%s\037%s\037%s\037%s\n' "$id" "$cur" "$latest" "$avail" "$blocked" "$behind"
+}
+
+check_item() {
+  local id="$1" cur latest="" behind=""
+  case "$id" in
+    hangar)
+      cur="$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || true)"
+      if GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh} -o BatchMode=yes" run_limit 20 git -C "$REPO" fetch -q origin main </dev/null >/dev/null 2>&1; then
+        latest="$(git -C "$REPO" rev-parse --short origin/main 2>/dev/null || true)"
+        behind="$(git -C "$REPO" rev-list --count HEAD..origin/main 2>/dev/null || true)"
+      fi ;;
+    *)
+      cur="$(installed_version "$id" || true)"
+      case "$id" in
+        claude) latest="$(latest_claude || true)" ;;
+        codex) latest="$(latest_codex || true)" ;;
+        t3) latest="$(latest_t3 "$cur" || true)" ;;
+        gh) latest="$(latest_gh_apt || true)" ;;
+        tea) latest="$(tea_latest_tag || true)" ;;
+      esac
+      latest="$(clean_version "$latest")" ;;
+  esac
+  record "$id" "$cur" "$latest" "$behind"
+}
+
+check_brewed() { # gh and tea on the Mac come from Homebrew: one index refresh, one outdated list
+  local out id cur latest have=
+  command -v brew >/dev/null 2>&1 || return 0
+  for id in gh tea; do if item_installed "$id"; then have="$have $id"; fi; done
+  [ -n "$have" ] || return 0
+  run_limit 40 brew update -q >/dev/null 2>&1 || true
+  # shellcheck disable=SC2086
+  out="$(run_limit 40 brew outdated --formula --verbose $have 2>/dev/null)" || true
+  for id in $have; do
+    cur="$(installed_version "$id" || true)"
+    # "gh (2.101.0) < 2.102.0" when behind; nothing when current
+    latest="$(printf '%s\n' "$out" | awk -v n="$id" '$1 == n {print $NF}')"
+    latest="$(clean_version "${latest:-$cur}")"
+    record "$id" "$cur" "$latest" > "$OUTDATED_DIR/$id.rec"
+  done
+}
+
+json_str() { printf '"%s"' "$(printf '%s' "$1" | tr -d '\000-\037' | sed 's/\\/\\\\/g; s/"/\\"/g')"; }
+json_or_null() { if [ -n "$1" ]; then json_str "$1"; else printf null; fi; }
+
+cmd_outdated() {
+  local json=0 arg id tmp sep= rid cur latest avail blocked behind
+  for arg in "$@"; do
+    case "$arg" in --json) json=1 ;; *) say "usage: hangar outdated [--json]"; exit 2 ;; esac
+  done
+  tool_path
+  tmp="$(mktemp -d)"; OUTDATED_DIR="$tmp"
+  # Each item resolves on its own, at once, so a slow or failing one costs only itself.
+  for id in $ITEM_IDS; do
+    if [ "$OS" = Darwin ] && { [ "$id" = gh ] || [ "$id" = tea ]; }; then
+      if [ "$id" = gh ]; then ( set +e; check_brewed ) 2>/dev/null & fi
+      continue
+    fi
+    item_installed "$id" || continue
+    { ( set +e; check_item "$id" > "$tmp/$id.rec" ) 2>/dev/null || true; [ -s "$tmp/$id.rec" ] || record "$id" "" "" > "$tmp/$id.rec"; } &
+  done
+  wait
+  if [ "$json" = 1 ]; then printf '{"items":['; fi
+  for id in $ITEM_IDS; do
+    [ -s "$tmp/$id.rec" ] || continue
+    IFS=$'\037' read -r rid cur latest avail blocked behind < "$tmp/$id.rec" || true
+    if [ "$json" = 1 ]; then
+      printf '%s{"id":%s,"name":%s,"current":%s,"latest":%s,"available":%s,"blocked":%s' "$sep" "$(json_str "$id")" "$(json_str "$(item_name "$id")")" "$(json_or_null "$cur")" "$(json_or_null "$latest")" "$avail" "$(json_or_null "$blocked")"
+      if [ "$id" = hangar ]; then printf ',"behind":%s' "${behind:-null}"; fi
+      printf '}'; sep=,
+    elif [ "$avail" = true ]; then
+      printf '  %s%-8s%s %s -> %s%s\n' "$Y" "$id" "$N" "${cur:-?}" "$latest" "${blocked:+  ($blocked)}"
+    else
+      printf '  %s%-8s%s %s%s\n' "$G" "$id" "$N" "${cur:-unknown}" "$([ -z "$latest" ] && echo "  (couldn't check for newer)")"
+    fi
+  done
+  if [ "$json" = 1 ]; then printf ']}\n'; fi
+  rm -rf "$tmp"
+  return 0
+}
+
 # ── update ────────────────────────────────────────────────────────────────────
+# Each returns non-zero on failure, and may leave a short reason in WHY for the Dashboard.
+WHY=
+update_claude() { claude update; }
+update_codex() { codex update 2>/dev/null || { WHY="codex update failed; rerun its installer"; return 1; }; }
+update_t3() { t3 update "$@"; }
+update_gh() {
+  local s=(sudo)
+  [ -t 0 ] || s=(sudo -n)   # nobody to type a password
+  if [ "$OS" = Linux ]; then
+    "${s[@]}" apt-get update -q >/dev/null && "${s[@]}" apt-get install -y -q --only-upgrade gh >/dev/null &&
+      ok "gh $(gh --version | awk 'NR == 1 {print $3}')"
+  else brew_upgrade gh; fi
+}
+update_tea() { if [ "$OS" = Linux ]; then install_tea; else brew_upgrade tea; fi; }
+brew_upgrade() {
+  command -v brew >/dev/null || return 0
+  brew list --formula "$1" >/dev/null 2>&1 || return 0
+  brew upgrade -q "$1"
+}
+
+# After the checkout moves to new code, rebuild what runs from it.
+refresh_hangar() {
+  if [ "$OS" = Linux ]; then
+    write_dashboard_unit || return 1
+    build_dashboard || { WHY="Pulled, but the Dashboard page build failed"; return 1; }
+  fi
+}
+# The very last step: on Linux it restarts the Dashboard server, which may be what's running this.
+restart_dashboard() {
+  if [ "$OS" = Linux ]; then
+    systemctl --user --no-block restart hangar-dashboard.service || warn "Dashboard restart failed; run 'hangar install'"
+  elif command -v launchctl >/dev/null && launchctl print "gui/$(id -u)/com.hangar.reporter" >/dev/null 2>&1; then
+    launchctl kickstart -k "gui/$(id -u)/com.hangar.reporter" || warn "Dashboard reporter restart failed"
+  fi
+}
+HANGAR_UPDATED=
+update_hangar() {
+  local branch
+  if [ "$OS" = Linux ]; then dashboard_node >/dev/null || { WHY="Dashboard needs Node 24 or newer"; return 1; }; fi
+  branch="$(git -C "$REPO" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+  if [ "$branch" != main ]; then WHY="Hangar: checkout is on '${branch:-?}', not main"; return 1; fi
+  if [ -n "$(git -C "$REPO" status --porcelain)" ]; then WHY="Hangar: local changes in the checkout; run 'hangar sync'"; return 1; fi
+  GIT_TERMINAL_PROMPT=0 git -C "$REPO" pull -q --ff-only origin main </dev/null || { WHY="Hangar: git pull failed"; return 1; }
+  ok "Hangar $(git -C "$REPO" rev-parse --short HEAD)"
+  # The new code does the rebuilding: this shell still holds the old functions.
+  bash "$REPO/bin/hangar" _refresh || { WHY="${WHY:-Hangar pulled, but rebuilding the Dashboard failed}"; return 1; }
+  HANGAR_UPDATED=1
+}
+
+# One `hangar update` at a time per machine. The lock is a symlink named for the holder's pid: creating it is
+# atomic everywhere (macOS bash 3.2 included), and it is stale once that process is gone.
+UPDATE_LOCK="$HOME/.local/state/hangar/update.lock"
+take_update_lock() {
+  local holder try
+  mkdir -p "$(dirname "$UPDATE_LOCK")"
+  for try in 1 2; do
+    if ln -s "$$" "$UPDATE_LOCK" 2>/dev/null; then trap 'rm -f "$UPDATE_LOCK"' EXIT; return 0; fi
+    holder="$(readlink "$UPDATE_LOCK" 2>/dev/null || true)"
+    if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then
+      printf 'Another hangar update is already running (pid %s)\n' "$holder" >&2; return 1
+    fi
+    [ "$(readlink "$UPDATE_LOCK" 2>/dev/null || true)" = "$holder" ] && rm -f "$UPDATE_LOCK"
+  done
+  printf 'Another hangar update is already running\n' >&2; return 1
+}
+
+update_items() { # update_items <id>...: just those, in order; Hangar itself last
+  local id seen=" " failed="" order=
+  for id in "$@"; do
+    case " $ITEM_IDS " in *" $id "*) ;; *) say "unknown item: $id"; return 2 ;; esac
+    case "$seen" in *" $id "*) say "item given twice: $id"; return 2 ;; esac
+    seen="$seen$id "
+  done
+  for id in "$@"; do [ "$id" = hangar ] || order="$order $id"; done
+  case "$seen" in *" hangar "*) order="$order hangar" ;; esac
+  for id in $order; do
+    WHY=
+    say "$(item_name "$id")"
+    if ! item_installed "$id"; then WHY="$(item_name "$id") isn't installed here"
+    else
+      case "$id" in
+        t3) update_t3 --yes ;; claude) update_claude ;; codex) update_codex ;;
+        gh) update_gh ;; tea) update_tea ;; hangar) update_hangar ;;
+      esac || { [ -n "$WHY" ] || WHY="$(item_name "$id") update failed"; }
+    fi
+    if [ -n "$WHY" ]; then bad "$WHY"; failed="${failed:+$failed; }$WHY"; fi
+  done
+  if [ -n "$failed" ]; then printf '%s\n' "$failed" >&2; fi
+  if [ -n "$HANGAR_UPDATED" ]; then restart_dashboard; fi   # only once the new code is pulled and rebuilt
+  [ -z "$failed" ]
+}
+
 cmd_update() {
+  tool_path
+  take_update_lock || return 1
+  if [ $# -gt 0 ]; then [ -t 0 ] || exec < /dev/null; update_items "$@"; return; fi
   if [ "$OS" = Linux ]; then dashboard_node || return 1; fi
   say "Claude Code"
   if ! command -v claude >/dev/null; then say "  skipped (not installed)"
-  elif ! claude update; then warn "claude update failed"; fi
+  elif ! update_claude; then warn "claude update failed"; fi
   say "Codex"
   if ! command -v codex >/dev/null; then say "  skipped (not installed)"
-  elif ! codex update 2>/dev/null; then warn "codex update failed; rerun its installer"; fi
+  elif ! update_codex; then warn "codex update failed; rerun its installer"; fi
   say "Skills from the skills installer"
   (cd "$HOME" && npx -y skills update -g -y) || warn "skills update failed"
   say "T3 Code (asks before restarting, since that interrupts running agents)"
   if ! command -v t3 >/dev/null; then say "  skipped (no t3 command here)"
-  elif ! t3 update; then warn "t3 update failed"; fi
+  elif ! update_t3; then warn "t3 update failed"; fi
   say "gh and tea"
   if [ "$OS" = Linux ]; then
     if ! command -v gh >/dev/null; then say "  gh skipped (not installed)"
-    elif sudo apt-get update -q >/dev/null && sudo apt-get install -y -q --only-upgrade gh >/dev/null; then
-      ok "gh $(gh --version | awk 'NR == 1 {print $3}')"
-    else warn "gh update failed"; fi
+    elif ! update_gh; then warn "gh update failed"; fi
     if ! command -v tea >/dev/null; then say "  tea skipped (not installed)"
-    else install_tea || warn "tea update failed"; fi
+    else update_tea || warn "tea update failed"; fi
   elif command -v brew >/dev/null; then
     local f
-    for f in gh tea; do
-      brew list --formula "$f" >/dev/null 2>&1 || continue
-      brew upgrade -q "$f" || warn "brew upgrade $f failed"
-    done
+    for f in gh tea; do brew_upgrade "$f" || warn "brew upgrade $f failed"; done
   fi
   if [ "$OS" = Linux ]; then
     write_dashboard_unit || return 1
@@ -482,11 +797,15 @@ hangar: keep this machine's agent setup in step with $REPO
   sync      commit this machine's changes, pull the other machine's, push, apply
   doctor    check links, PATH, T3 service, browser, WSL and Dashboard
   update    update tools and skills; rebuild and restart Dashboard on Linux
+            'update <id>...' updates just those: t3 claude codex gh tea hangar
+  outdated  list tools with a newer version; '--json' is what the Dashboard reads
   install   Linux only: install tools, T3 Code and Dashboard; serve through Tailscale
 EOF
 }
 
 case "${1:-help}" in
   setup) cmd_setup ;; sync) cmd_sync ;; doctor) cmd_doctor ;;
-  update) cmd_update ;; install) cmd_install ;; *) cmd_help ;;
+  update) shift; cmd_update "$@" ;; outdated) shift; cmd_outdated "$@" ;;
+  _refresh) refresh_hangar ;;   # internal: the second half of 'update hangar', run by the new code
+  install) cmd_install ;; *) cmd_help ;;
 esac

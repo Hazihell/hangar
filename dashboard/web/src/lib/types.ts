@@ -82,6 +82,30 @@ export type Power = {
   error: { message: string; at: string } | null
 }
 
+/** One tool Hangar keeps up to date on a Machine (API.md `## Updates`). */
+export type Update = {
+  /** `t3`, `claude`, `codex`, `gh`, `tea` or `hangar`. */
+  id: string
+  name: string
+  current: string | null
+  latest: string | null
+  /** Only for `hangar`: how many commits behind `origin/main` it is. */
+  behind?: number
+  available: boolean
+  /** Why the Dashboard can't update it, else null. A blocked item still says `available`. */
+  blocked: string | null
+}
+
+export type Updates = {
+  checkedAt: string | null
+  checking: boolean
+  items: Update[]
+  pending: { items: string[]; since: string } | null
+  error: { message: string; at: string } | null
+}
+
+export type T3Thread = { title: string; status: string }
+
 export type Machine = {
   id: string
   name: string
@@ -95,10 +119,17 @@ export type Machine = {
   apps: Apps | null
   /** Absent unless the Dashboard can put this Machine to Sleep or Shut it down. */
   power?: Power
+  /** On every Machine from a server that checks Updates. */
+  updates?: Updates
   history: HistoryPoint[]
 }
 
-export type MachinesResponse = { now: string; machines: Machine[] }
+export type MachinesResponse = {
+  now: string
+  machines: Machine[]
+  /** Which Dashboard build the server serves; a new one means this page is out of date. */
+  build?: string
+}
 
 /** Data of a `machine` server-sent event. */
 export type MachineEvent = Omit<Machine, "history" | "apps"> & {

@@ -18,6 +18,8 @@ export type DashboardState = {
   skew: number
   /** When we last heard from the server, by our clock. */
   lastContact: number | null
+  /** The Dashboard build this page was loaded with, once the server says (null: it doesn't). */
+  build: string | null
 }
 
 const RETRY_MS = 5_000
@@ -38,12 +40,27 @@ const FETCH_MS = 10_000
 const CLOSE_WATCH_MS = 4_000
 const CLOSE_FETCH_MS = 3_500
 
+const RELOADED_FOR = "hangar:reloaded-for-build"
+
+/** Reloads the page for a new build, unless this tab already did for that build. */
+function reloadFor(build: string): boolean {
+  try {
+    if (sessionStorage.getItem(RELOADED_FOR) === build) return false
+    sessionStorage.setItem(RELOADED_FOR, build)
+  } catch {
+    return false // Without storage there's no loop guard: keep the old page.
+  }
+  window.location.reload()
+  return true
+}
+
 export function useDashboard() {
   const [state, setState] = useState<DashboardState>({
     connection: "loading",
     machines: null,
     skew: 0,
     lastContact: null,
+    build: null,
   })
   const reconnectRef = useRef<() => void>(() => {})
   const closely = useRef(false)
@@ -59,6 +76,8 @@ export function useDashboard() {
     let lastHeard = Date.now()
     // Server clock minus ours, as of the last snapshot.
     let skew = 0
+    // The build of the first snapshot: the one this page's code belongs to.
+    let build: string | null = null
     const inflight = new Set<AbortController>()
 
     const update = (fn: (s: DashboardState) => DashboardState) => {
@@ -89,6 +108,12 @@ export function useDashboard() {
       try {
         const body = await fetchMachines()
         if (disposed || id !== loadId) return
+        if (typeof body.build === "string" && body.build) {
+          build ??= body.build
+          // The server was updated (a Hangar update restarted it, from this tab or
+          // another): load the new Dashboard, once per build so a stale cache can't loop.
+          if (body.build !== build && reloadFor(body.build)) return
+        }
         const offset = Date.parse(body.now) - Date.now()
         skew = Number.isFinite(offset) ? offset : 0
         let machines = body.machines.map((m) => ({ ...m, vpns: m.vpns ?? [], apps: m.apps ?? null }))
@@ -100,6 +125,7 @@ export function useDashboard() {
           machines,
           skew,
           lastContact: Date.now(),
+          build,
         }))
       } catch {
         if (disposed || id !== loadId) return

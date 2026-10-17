@@ -106,3 +106,27 @@ export function PowerAway({
     </section>
   )
 }
+
+/**
+ * The connection dropped while Hangar was updating on the Machine the
+ * Dashboard runs on: it's restarting itself. In place of the verdict until the
+ * page reconnects (and then reloads, to load the new Dashboard).
+ */
+export function Restarting({ name, heardAt, now }: { name: string; heardAt: number | null; now: number }) {
+  return (
+    <section aria-labelledby="verdict" className="flex max-w-2xl flex-col gap-4">
+      <h1 id="verdict" className="text-[1.75rem] leading-[1.15] font-semibold tracking-[-0.012em] [word-spacing:0.06em] text-balance sm:text-[2.25rem]">
+        The Dashboard is restarting after the update.
+      </h1>
+      <p className="text-[1.0625rem] text-pretty text-muted-foreground">
+        Hangar was updated on {name}, where the Dashboard runs, and it’s starting again. This page reconnects on its
+        own and loads the new version.
+      </p>
+      <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
+        <span aria-hidden className="size-2 shrink-0 rounded-full bg-muted-foreground/60 motion-safe:animate-breathe" />
+        Waiting for the Dashboard
+        {heardAt !== null && ` · last heard ${formatRelative(heardAt, now)}`}
+      </p>
+    </section>
+  )
+}

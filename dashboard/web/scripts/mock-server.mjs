@@ -2,8 +2,8 @@
 // Dev stand-in for dashboard/server per dashboard/API.md, with fake Usage,
 // VPNs, Apps and Alerts. Serves GET /api/machines, GET /api/events,
 // POST /api/machines/:id/vpns/:name, GET /api/machines/:id/minutes/:t,
-// POST /api/machines/:id/quit, POST /api/machines/:id/power and the
-// /api/alerts/* endpoints. No dependencies.
+// POST /api/machines/:id/quit, POST /api/machines/:id/power, the Updates
+// endpoints and the /api/alerts/* endpoints. No dependencies.
 //
 //   node scripts/mock-server.mjs [port] [--extra] [--calm]
 //
@@ -51,6 +51,16 @@
 // resume. Shut down is "blocked by an app": after MOCK_POWER_FAIL_MS (default
 // 8 s) it clears pending and sets the server's error. MOCK_SHUTDOWN=ok makes
 // Shut down go down like Sleep instead.
+//
+// Updates: every Machine has a few out of date (checked 2 hours ago). On the
+// PC, gh is blocked ("Run `hangar update` on the PC") and T3 has two running
+// threads (MOCK_T3_THREADS=none for none, =null for unreadable). Each item
+// takes MOCK_UPDATE_MS (default 4 s); then the Machine is checked again.
+// Codex on the PC fails (unless MOCK_UPDATE_FAIL=0), ending the run with the
+// error. Hangar on the PC restarts "the server": every connection drops for
+// MOCK_RESTART_MS (default 8 s), pending is lost, as on the real one, and
+// GET /api/machines then names a new `build` (open pages reload for it).
+// Check now takes 2 s.
 //
 // Like the real server, every mutating request (not /api/report) must look
 // same-origin: a Host of 127.0.0.1/localhost on this port, an Origin (if any)
@@ -460,6 +470,45 @@ function makeMachines(now) {
 
 const machines = makeMachines(Date.now())
 
+// Updates, as `hangar outdated --json` would say.
+function upd(id, name, current, latest, extra = {}) {
+  return { id, name, current, latest, available: latest !== null && current !== latest, blocked: null, ...extra }
+}
+for (const m of machines) {
+  if (m.id === "stormtrooper") {
+    m.updates = {
+      checkedAt: iso(Date.now() - 2 * 3600_000),
+      checking: false,
+      items: [
+        upd("t3", "T3 Code", "0.0.27", "0.0.29"),
+        upd("claude", "Claude Code", "2.1.302", "2.1.310"),
+        upd("codex", "Codex", "0.48.0", "0.50.1"),
+        upd("gh", "GitHub CLI", "2.81.0", "2.82.1", { blocked: "Run `hangar update` on the PC" }),
+        upd("tea", "Gitea CLI", "0.11.1", "0.11.1"),
+        upd("hangar", "Hangar", "2fc68d8", "7a1c9e0", { behind: 2 }),
+      ],
+      pending: null,
+      error: null,
+    }
+  } else if (m.id === "rogers-macbook-air") {
+    m.updates = {
+      checkedAt: iso(Date.now() - 2 * 3600_000 - 600_000),
+      checking: false,
+      items: [
+        upd("claude", "Claude Code", "2.1.305", "2.1.310"),
+        upd("codex", "Codex", "0.50.1", "0.50.1"),
+        upd("gh", "GitHub CLI", "2.82.1", "2.82.1"),
+        upd("tea", "Gitea CLI", "0.10.1", "0.11.1"),
+        upd("hangar", "Hangar", "2fc68d8", "7a1c9e0", { behind: 2 }),
+      ],
+      pending: null,
+      error: null,
+    }
+  } else {
+    m.updates = { checkedAt: null, checking: false, items: [], pending: null, error: null }
+  }
+}
+
 function view(m, now) {
   return {
     id: m.id,
@@ -471,6 +520,7 @@ function view(m, now) {
     vpns: m.vpns.map((v) => ({ ...v })),
     apps: appsView(m),
     ...(m.power ? { power: { ...m.power } } : {}),
+    updates: { ...m.updates, items: m.updates.items.map((u) => ({ ...u })) },
   }
 }
 
@@ -642,6 +692,71 @@ function runPowerCommand(m, action) {
   }, 1_500)
 }
 
+// Updates.
+const updateMs = Number(process.env.MOCK_UPDATE_MS ?? 4_000)
+// The Dashboard build GET /api/machines names; a Hangar update on the PC changes it.
+let build = process.env.MOCK_BUILD ?? "2fc68d8"
+const restartMs = Number(process.env.MOCK_RESTART_MS ?? 8_000)
+const T3_THREADS = [
+  { title: "Fix the flaky reporter test on the Mac", status: "running" },
+  { title: "Dashboard: Updates row and confirmations", status: "waiting" },
+]
+
+function recheck(m) {
+  m.updates.checking = true
+  broadcast({ ...view(m, Date.now()), minute: null })
+  setTimeout(() => {
+    m.updates.checking = false
+    m.updates.checkedAt = iso(Date.now())
+    broadcast({ ...view(m, Date.now()), minute: null })
+  }, 1_500)
+}
+
+function runUpdate(m, ids) {
+  m.updates.pending = { items: ids, since: iso(Date.now()) }
+  m.updates.error = null
+  broadcast({ ...view(m, Date.now()), minute: null })
+  const step = (i) => {
+    if (i === ids.length) {
+      m.updates.pending = null
+      console.log(`updates: ${m.id} done`)
+      return recheck(m)
+    }
+    setTimeout(() => {
+      const item = m.updates.items.find((u) => u.id === ids[i])
+      if (item.id === "codex" && m.id === "stormtrooper" && process.env.MOCK_UPDATE_FAIL !== "0") {
+        m.updates.pending = null
+        m.updates.error = { message: "npm error EACCES: permission denied, rename '/usr/lib/node_modules/@openai/codex'", at: iso(Date.now()) }
+        console.log(`updates: ${m.id} codex failed`)
+        return recheck(m)
+      }
+      if (item.id === "hangar" && m.os === "windows") {
+        // Restarts the Dashboard: everything drops, and pending goes with it.
+        asleep = true
+        console.log(`updates: ${m.id} hangar -> restarting for ${restartMs / 1000} s`)
+        for (const socket of sockets) socket.destroy()
+        clients.clear()
+        setTimeout(() => {
+          Object.assign(item, { current: item.latest, available: false })
+          delete item.behind
+          build = item.latest
+          m.updates.pending = null
+          m.updates.checkedAt = iso(Date.now())
+          m.lastSeenMs = Date.now()
+          asleep = false
+          console.log(`updates: ${m.id} back after the restart`)
+        }, restartMs)
+        return
+      }
+      Object.assign(item, { current: item.latest, available: false })
+      delete item.behind
+      broadcast({ ...view(m, Date.now()), minute: null })
+      step(i + 1)
+    }, updateMs)
+  }
+  step(0)
+}
+
 setInterval(() => {
   if (asleep) return
   const now = Date.now()
@@ -681,6 +796,7 @@ const server = createServer((req, res) => {
     const now = Date.now()
     const body = {
       now: iso(now),
+      build,
       machines: machines.map((m) => ({
         ...view(m, now),
         history: m.history.map(({ n: _n, ...p }) => p),
@@ -734,6 +850,40 @@ const server = createServer((req, res) => {
       runPowerCommand(m, action)
       sendJson(res, 202, m.power)
     })
+    return
+  }
+
+  const updatesPath = url.pathname.match(/^\/api\/machines\/([^/]+)\/updates(\/check)?$/)
+  if (req.method === "POST" && updatesPath) {
+    readJson(req, res, true, (body) => {
+      const m = machines.find((x) => x.id === decodeURIComponent(updatesPath[1]))
+      if (!m) return send(res, 404)
+      if (updatesPath[2]) {
+        if (!isOnline(m, Date.now()) || m.updates.checking) return send(res, 409)
+        recheck(m)
+        return send(res, 202)
+      }
+      const ids = isObject(body) ? body.items : undefined
+      const known = new Set(m.updates.items.map((u) => u.id))
+      if (!Array.isArray(ids) || ids.length === 0 || new Set(ids).size !== ids.length || !ids.every((id) => known.has(id))) {
+        return send(res, 400)
+      }
+      if (!isOnline(m, Date.now()) || m.updates.pending) return send(res, 409)
+      if (ids.some((id) => m.updates.items.find((u) => u.id === id).blocked)) return send(res, 409)
+      console.log(`updates: ${m.id} ${ids.join(",")}`)
+      runUpdate(m, ids)
+      sendJson(res, 202, view(m, Date.now()).updates)
+    })
+    return
+  }
+
+  const threadsPath = url.pathname.match(/^\/api\/machines\/([^/]+)\/t3-threads$/)
+  if (req.method === "GET" && threadsPath) {
+    const m = machines.find((x) => x.id === decodeURIComponent(threadsPath[1]))
+    if (!m?.updates.items.some((u) => u.id === "t3")) return send(res, 404)
+    const mode = process.env.MOCK_T3_THREADS
+    const threads = mode === "null" ? null : mode === "none" ? [] : T3_THREADS
+    setTimeout(() => sendJson(res, 200, { threads }), 300)
     return
   }
 
