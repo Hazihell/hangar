@@ -10,7 +10,7 @@ import { createVpn, VPN_TIMEOUT } from './vpn.ts';
 import type { Exec } from './vpn.ts';
 import { createServer } from 'node:http';
 import type { ServerResponse } from 'node:http';
-import { readFileSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { resolve, extname, sep, join } from 'node:path';
 import { homedir } from 'node:os';
@@ -25,11 +25,14 @@ import type { Rules } from './alerts.ts';
 import type { FetchLike } from './push.ts';
 const root = fileURLToPath(new URL('..', import.meta.url));
 let tailnetName = '', tailnetTried = 0;
+// On the PC, Tailscale runs in Windows, and its CLI answers through WSL interop.
+const windowsTailscale = '/mnt/c/Program Files/Tailscale/tailscale.exe';
+const tailscale = existsSync(windowsTailscale) ? windowsTailscale : 'tailscale';
 function dashboardHosts() {
   // Tailscale may not be up yet at boot; until it answers, ask again at most once a minute, in the background, so the Mac's reports aren't refused for good.
   if (!tailnetName && Date.now() - tailnetTried > 60_000) {
     tailnetTried = Date.now();
-    execFile('tailscale', ['status', '--json'], { timeout: 3000, encoding: 'utf8' }, (error, stdout) => {
+    execFile(tailscale, ['status', '--json'], { timeout: 3000, encoding: 'utf8' }, (error, stdout) => {
       if (error) return; // Local access still works without Tailscale.
       try { tailnetName = String(JSON.parse(stdout).Self?.DNSName ?? '').replace(/\.$/, '').toLowerCase(); } catch {}
     });

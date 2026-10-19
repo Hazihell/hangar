@@ -38,6 +38,10 @@ WARNED=0 FAILED=0
 is_wsl() { grep -qi microsoft /proc/version 2>/dev/null; }
 is_number() { [[ "${1:-}" =~ ^-?[0-9]+(\.[0-9]+)?$ ]]; }
 
+# ── Tailscale ─────────────────────────────────────────────────────────────────
+# On the PC, Tailscale runs in Windows and serves the Dashboard; Ubuntu has none of its own (see README).
+ts() { if is_wsl; then "$C_DRIVE/Program Files/Tailscale/tailscale.exe" "$@"; else tailscale "$@"; fi; }
+
 # ── Temperature ───────────────────────────────────────────────────────────────
 # The PC's CPU temperature comes from HWiNFO64, which a logon task starts with admin rights; the Mac's from a helper built here.
 C_DRIVE="${HANGAR_C_DRIVE:-/mnt/c}"   # where WSL mounts C:; tests point it at a stub
@@ -45,12 +49,6 @@ HWINFO_TASK="Hangar HWiNFO"
 MAC_TEMPS="$HOME/.local/state/hangar/temps"
 winps() { "$C_DRIVE/Windows/System32/WindowsPowerShell/v1.0/powershell.exe" -NoProfile -NonInteractive "$@"; }
 
-# ── Tailscale watchdog ────────────────────────────────────────────────────────
-# Restarts tailscaled after Windows sleep; see bin/tailscale-watchdog. Root runs a copy, not the repo's file.
-SYS_ROOT="${HANGAR_SYS_ROOT:-}"   # where system files go; tests point it at a scratch folder
-WATCHDOG=hangar-tailscale-watchdog
-WATCHDOG_BIN="/usr/local/libexec/$WATCHDOG"
-WATCHDOG_UNITS="/etc/systemd/system"
 hwinfo_task() { "$C_DRIVE/Windows/System32/schtasks.exe" /query /tn "$HWINFO_TASK" >/dev/null 2>&1; }
 hwinfo_cpu() { # the CPU temperature HWiNFO reports to Gadget, found by label as the collector does; nothing if it isn't
   winps -Command 'try { $v = Get-ItemProperty -Path HKCU:\Software\HWiNFO64\VSB -ErrorAction Stop; $l = @($v.PSObject.Properties | Where-Object { $_.Name -match "^Label\d+$" -and $_.Value -eq "CPU (Tctl/Tdie)" })[0]; if ($l) { $v.("ValueRaw" + $l.Name.Substring(5)) } } catch { }' 2>/dev/null | tr -d '\r'
@@ -183,7 +181,8 @@ install_dashboard() {
   build_dashboard || warn "Dashboard page build failed; keeping the previous page"
   if systemctl --user enable --now hangar-dashboard.service && systemctl --user restart hangar-dashboard.service; then ok "Dashboard service enabled"
   else warn "Dashboard service failed; check 'systemctl --user status hangar-dashboard.service'"; fi
-  if tailscale serve --bg 4318; then ok "Dashboard served through Tailscale"
+  if ts serve --bg 4318; then ok "Dashboard served through Tailscale"
+  elif is_wsl; then warn "Tailscale serve failed; is Tailscale for Windows running and signed in?"
   else warn "Tailscale serve failed; for permissions run 'sudo tailscale set --operator=$USER', then 'tailscale serve --bg 4318'"; fi
 }
 
@@ -229,52 +228,17 @@ setup_temps() {
   else rm -f "$MAC_TEMPS.new"; warn "couldn't build the CPU temperature helper from $src"; fi
 }
 
-watchdog_files() { # each file the watchdog needs: <source>|<installed path>|<mode>
-  printf '%s|%s|755\n' "$REPO/bin/tailscale-watchdog" "$SYS_ROOT$WATCHDOG_BIN"
-  printf '%s|%s|644\n' "$1/service" "$SYS_ROOT$WATCHDOG_UNITS/$WATCHDOG.service" "$1/timer" "$SYS_ROOT$WATCHDOG_UNITS/$WATCHDOG.timer"
+# Windows counts a wake from the network as unattended and sleeps again after two idle minutes,
+# since nobody touches the keyboard or mouse. 0 turns that off: the PC sleeps only when told to.
+unattended_sleep() { # the active power plan's unattended sleep timeout on mains, in seconds; nothing if unset
+  winps -Command '$g = [regex]::Match((powercfg /getactivescheme), "[0-9a-f-]{36}").Value; (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes\$g\238c9fa8-0aad-41ed-83f4-97be242c8f20\7bc4a2f9-d8fc-4469-b07b-33eb785aaca0" -ErrorAction SilentlyContinue).ACSettingIndex' 2>/dev/null | tr -d '\r'
 }
 
-write_watchdog_units() { # write_watchdog_units <dir>
-  cat > "$1/service" <<EOF
-[Unit]
-Description=Restart tailscaled after Windows sleep
-After=tailscaled.service
-
-[Service]
-Type=oneshot
-ExecStart=$WATCHDOG_BIN
-EOF
-  # A wake sets the clock forward, which OnClockChange catches at once. The run at boot records
-  # the clock offset the next wake is measured against.
-  cat > "$1/timer" <<EOF
-[Unit]
-Description=Check for a wake from Windows sleep
-
-[Timer]
-OnClockChange=true
-OnBootSec=1min
-
-[Install]
-WantedBy=timers.target
-EOF
-}
-
-setup_watchdog() {
-  say "Tailscale watchdog"
-  if ! command -v tailscale >/dev/null; then warn "no tailscale here; install it, then run 'hangar setup' again"; return; fi
-  local tmp src dest mode as=sudo changed=0
-  [ -w "$SYS_ROOT$WATCHDOG_UNITS" ] && as=
-  tmp="$(mktemp -d)"
-  write_watchdog_units "$tmp"
-  while IFS='|' read -r src dest mode; do
-    cmp -s "$src" "$dest" && continue
-    $as install -D -m "$mode" "$src" "$dest" || { rm -rf "$tmp"; warn "couldn't install $dest; tailscaled won't recover by itself after sleep"; return; }
-    changed=1
-  done < <(watchdog_files "$tmp")
-  rm -rf "$tmp"
-  if [ "$changed" = 0 ] && systemctl is-active --quiet "$WATCHDOG.timer"; then ok "restarts tailscaled after sleep"; return; fi
-  if $as systemctl daemon-reload && $as systemctl enable "$WATCHDOG.timer" && $as systemctl restart "$WATCHDOG.timer"; then ok "watchdog installed; restarts tailscaled after sleep"
-  else warn "watchdog timer didn't start; check 'systemctl status $WATCHDOG.timer'"; fi
+setup_wake() {
+  say "Remote wake"
+  if [ "$(unattended_sleep)" = 0 ]; then ok "the PC stays awake after a remote wake"; return; fi
+  if winps -Command 'powercfg /setacvalueindex SCHEME_CURRENT SUB_SLEEP UNATTENDSLEEP 0; if ($LASTEXITCODE) { exit 1 }; powercfg /setactive SCHEME_CURRENT' >/dev/null 2>&1; then ok "the PC now stays awake after a remote wake"
+  else warn "couldn't change Windows' unattended sleep timeout; the PC sleeps again two minutes after a remote wake"; fi
 }
 
 # ── setup ─────────────────────────────────────────────────────────────────────
@@ -317,7 +281,7 @@ cmd_setup() {
     fi
   done
   if [ "$OS" = Darwin ]; then setup_temps; setup_reporter; fi
-  if is_wsl; then setup_hwinfo; setup_watchdog; fi
+  if is_wsl; then setup_hwinfo; setup_wake; fi
   if [ "$FAILED" = 1 ]; then say "${R}Setup finished with errors.${N}"; exit 1; fi
   say "Done. Run 'hangar doctor' to check the whole machine."
 }
@@ -478,9 +442,11 @@ cmd_doctor() {
       else
         bad "no $cfg; see README for the settings"
       fi
-      if ! systemctl is-active --quiet "$WATCHDOG.timer" 2>/dev/null; then bad "Tailscale watchdog off, so tailscaled stays offline after sleep; run 'hangar setup'"
-      elif ! cmp -s "$REPO/bin/tailscale-watchdog" "$SYS_ROOT$WATCHDOG_BIN"; then warn "Tailscale watchdog out of date; run 'hangar setup'"
-      else ok "Tailscale watchdog restarts tailscaled after sleep"; fi
+      if [ "$(wslinfo --networking-mode 2>/dev/null)" = mirrored ]; then ok "Ubuntu shares Windows' network (mirrored)"
+      else bad "Ubuntu has its own network behind Windows, which a VPN or sleep breaks; set 'networkingMode=mirrored' under [wsl2] in $cfg, then 'wsl --shutdown'"; fi
+      if systemctl is-active --quiet tailscaled 2>/dev/null; then warn "Tailscale runs inside Ubuntu too; Windows' Tailscale is enough, so run 'sudo tailscale logout && sudo apt purge -y tailscale'"; fi
+      if [ "$(unattended_sleep)" = 0 ]; then ok "the PC stays awake after a remote wake"
+      else warn "the PC sleeps again two minutes after a remote wake; run 'hangar setup'"; fi
     fi
   fi
 
@@ -488,7 +454,7 @@ cmd_doctor() {
   if [ "$OS" = Linux ]; then
     if systemctl --user is-active --quiet hangar-dashboard.service 2>/dev/null; then ok "Dashboard service running"
     else bad "Dashboard service stopped; run 'hangar install'"; fi
-    local serve_status; serve_status="$(tailscale serve status 2>/dev/null || true)"
+    local serve_status; serve_status="$(ts serve status 2>/dev/null || true)"
     if grep -qE '127\.0\.0\.1:4318|localhost:4318' <<< "$serve_status"; then ok "Tailscale proxies Dashboard"
     else bad "Tailscale proxy missing; run 'tailscale serve --bg 4318'"; fi
     if curl -fsS --max-time 5 http://127.0.0.1:4318/api/machines >/dev/null; then ok "Dashboard API answers"
@@ -504,7 +470,7 @@ cmd_doctor() {
   elif [ "$OS" = Darwin ]; then
     if launchctl print "gui/$(id -u)/com.hangar.reporter" >/dev/null 2>&1; then ok "Dashboard reporter loaded"
     else bad "Dashboard reporter missing; run 'hangar setup'"; fi
-    local dashboard_url="${HANGAR_DASHBOARD_URL:-https://stormtrooper-linux.taila332e5.ts.net/api/report}"
+    local dashboard_url="${HANGAR_DASHBOARD_URL:-https://stormtrooper.taila332e5.ts.net/api/report}"
     if curl -fsS --max-time 5 "${dashboard_url%/api/report}/api/machines" >/dev/null; then ok "Dashboard reachable"
     else bad "Dashboard unreachable"; fi
   fi

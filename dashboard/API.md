@@ -2,15 +2,15 @@
 
 The contract between the server (`dashboard/server`), the reporters, and the page (`dashboard/web`). Types live in the type-only [contract.ts](contract.ts), imported by both the Node server and the page. `npm run typecheck` in `dashboard/web` checks both against it; the server still runs directly with Node 24 type stripping, without dependencies or a build step. Terms follow [GLOSSARY.md](../GLOSSARY.md).
 
-The server listens on `127.0.0.1:4318` (override with `HANGAR_DASHBOARD_PORT`). `tailscale serve` puts it at `https://stormtrooper-linux.taila332e5.ts.net`. In production the server also serves the built page from `dashboard/web/dist`; in development Vite proxies `/api` to it.
+The server listens on `127.0.0.1:4318` (override with `HANGAR_DASHBOARD_PORT`). `tailscale serve` puts it at `https://stormtrooper.taila332e5.ts.net`. In production the server also serves the built page from `dashboard/web/dist`; in development Vite proxies `/api` to it.
 
 ## Request safety
 
-Every non-GET/HEAD request requires an allowed `Host`: `127.0.0.1:<server port>`, `localhost:<server port>` or this Machine's tailnet DNS name. Startup reads `tailscale status --json` → `Self.DNSName`, removing the trailing dot; if Tailscale is unavailable, local access still works. `HANGAR_DASHBOARD_HOSTS` adds comma- or whitespace-separated exact hosts (optionally including a port), for an explicit override or additional development host. No wildcards.
+Every non-GET/HEAD request requires an allowed `Host`: `127.0.0.1:<server port>`, `localhost:<server port>` or this Machine's tailnet DNS name. Startup reads `tailscale status --json` (on the PC, Windows' `tailscale.exe`) → `Self.DNSName`, removing the trailing dot; if Tailscale is unavailable, local access still works. `HANGAR_DASHBOARD_HOSTS` adds comma- or whitespace-separated exact hosts (optionally including a port), for an explicit override or additional development host. No wildcards.
 
 Except for `POST /api/report`, a present `Origin` must be `https://<allowed host>`, or `http(s)://127.0.0.1:<allowed port>` / `http(s)://localhost:<allowed port>`. A present `Sec-Fetch-Site` must be `same-origin` or `none`. Violations return `403` before handling the endpoint, including VPN, Quit and Alerts mutations. Reports need the Host check too, but require neither browser header.
 
-Tailscale Serve's TCP HTTP proxy preserves the original Host (`r.Out.Host = r.In.Host` in [Tailscale v1.104.1](https://github.com/tailscale/tailscale/blob/v1.104.1/ipn/ipnlocal/serve.go#L927)), so the Mac reporter's HTTPS URL forwards `stormtrooper-linux.taila332e5.ts.net`, which startup discovers. Forwarded headers do not grant trust.
+Tailscale Serve's TCP HTTP proxy preserves the original Host (`r.Out.Host = r.In.Host` in [Tailscale v1.104.1](https://github.com/tailscale/tailscale/blob/v1.104.1/ipn/ipnlocal/serve.go#L927)), so the Mac reporter's HTTPS URL forwards `stormtrooper.taila332e5.ts.net`, which startup discovers. Forwarded headers do not grant trust.
 
 Vite already uses `changeOrigin: true`, forwarding Host as `127.0.0.1:<server port>`. Vite rewrites a present browser Origin to the API origin too, so proxied commands use the same safety checks as the built page.
 

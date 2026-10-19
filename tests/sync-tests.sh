@@ -6,8 +6,6 @@ SRC="$(cd "$(dirname "$0")/.." && pwd)"; T=$(mktemp -d /tmp/agents-t.XXXX); cd $
 mkdir -p $T/nosys; printf '#!/bin/sh\n[ "$2" = is-active ] && exit 3\nexit 0\n' > $T/nosys/systemctl; chmod +x $T/nosys/systemctl; export PATH=$T/nosys:$PATH
 # setup on WSL asks Windows about HWiNFO; a drive that isn't there keeps every test away from the real one.
 export HANGAR_C_DRIVE=$T/no-c-drive
-# setup on WSL installs the Tailscale watchdog; a writable scratch root keeps it out of the real /etc, without sudo.
-export HANGAR_SYS_ROOT=$T/sys; mkdir -p $T/sys/etc/systemd/system
 pass(){ echo "PASS $*"; }; fail(){ echo "FAIL $*"; FAILS=1; }; FAILS=0
 edit(){ perl -pi -e "$1" "$2"; }   # in-place edit; sed -i differs between BSD and GNU
 # Seed a fresh repo from the working tree, without its .git, so no real remote is ever reachable
@@ -201,13 +199,13 @@ unmac
 git -C $T/D commit -q --allow-empty -m "newer still" && git -C $T/D push -q origin HEAD:main; : > $CALLS
 hg update hangar </dev/null >$T/out 2>$T/err; rc=$?
 [ $rc = 1 ] && [ "$(git -C $C/.agents rev-parse HEAD)" = "$(git -C $T/D rev-parse HEAD)" ] && ! grep -q 'systemctl --user --no-block' $CALLS && pass "11u no restart when the rebuild after the pull failed" || { fail 11u; cat $CALLS $T/out $T/err; }
-# 12 PC temperature: setup runs HWiNFO's one-time setup elevated through a stub Windows (WSL only)
+# 12 PC temperature and remote wake: setup runs HWiNFO's one-time setup elevated, and powercfg, through a stub Windows (WSL only)
 if grep -qi microsoft /proc/version 2>/dev/null; then
   hg setup </dev/null >$T/out 2>&1; rc=$?
   [ $rc = 0 ] && grep -q "install HWiNFO64 for the PC's CPU temperature" $T/out && pass "12a no HWiNFO64: setup warns and goes on" || { fail 12a; cat $T/out; }
   WIN=$T/win; export HANGAR_C_DRIVE=$WIN; S32=$WIN/Windows/System32; mkdir -p "$S32/WindowsPowerShell/v1.0" "$WIN/Program Files/HWiNFO64" $T/appdata; : > "$WIN/Program Files/HWiNFO64/HWiNFO64.EXE"
   printf '#!/bin/sh\n[ -e %s/task ]\n' $T > $S32/schtasks.exe
-  printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %s/ps-calls\n[ -z "$PS_FAIL" ] || exit 1\ntouch %s/task\n' $T $T > $S32/WindowsPowerShell/v1.0/powershell.exe
+  printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %s/ps-calls\n[ -z "$PS_FAIL" ] || exit 1\ntouch %s/task\n[ -z "$PS_OUT" ] || echo "$PS_OUT"\n' $T $T > $S32/WindowsPowerShell/v1.0/powershell.exe
   printf '#!/bin/sh\necho "C:\\Users\\t\\AppData\\Local\r"\n' > $S32/cmd.exe
   chmod +x $S32/schtasks.exe $S32/cmd.exe $S32/WindowsPowerShell/v1.0/powershell.exe
   stub wslpath '[ "$1" = -w ] && printf "%s\n" "W:\\appdata\\hangar\\hwinfo-setup.ps1" || echo '$T/appdata
@@ -216,28 +214,13 @@ if grep -qi microsoft /proc/version 2>/dev/null; then
   hg setup </dev/null >$T/out 2>&1; rc=$?
   [ $rc = 0 ] && cmp -s $T/appdata/hangar/hwinfo-setup.ps1 $C/.agents/dashboard/windows/hwinfo-setup.ps1 && grep -q 'Start-Process powershell.exe -Verb RunAs -Wait -PassThru' $T/ps-calls && grep -qF 'W:\appdata\hangar\hwinfo-setup.ps1' $T/ps-calls && grep -q 'HWiNFO64 set up to start at logon' $T/out && pass "12c the script is copied to Windows and run elevated" || { fail 12c; cat $T/out $T/ps-calls; }
   : > $T/ps-calls; hg setup </dev/null >$T/out 2>&1; rc=$?
-  [ $rc = 0 ] && [ ! -s $T/ps-calls ] && grep -q 'HWiNFO64 starts at logon' $T/out && pass "12d with the task in place, setup asks for nothing" || { fail 12d; cat $T/out $T/ps-calls; }
+  [ $rc = 0 ] && ! grep -q 'RunAs' $T/ps-calls && grep -q 'HWiNFO64 starts at logon' $T/out && pass "12d with the task in place, setup asks for nothing" || { fail 12d; cat $T/out $T/ps-calls; }
+  # 12e remote wake: setup turns off Windows' unattended sleep, once
+  grep -q 'SUB_SLEEP UNATTENDSLEEP 0' $T/ps-calls && grep -q 'the PC now stays awake after a remote wake' $T/out && pass "12e setup turns off the unattended sleep timeout" || { fail 12e; cat $T/out $T/ps-calls; }
+  : > $T/ps-calls; PS_OUT=0 hg setup </dev/null >$T/out 2>&1; rc=$?
+  [ $rc = 0 ] && ! grep -q UNATTENDSLEEP $T/ps-calls && grep -q 'the PC stays awake after a remote wake' $T/out && pass "12f with it already off, setup leaves it" || { fail 12f; cat $T/out $T/ps-calls; }
   export HANGAR_C_DRIVE=$T/no-c-drive
-  # 12e setup installs the watchdog: its own copy of the script, and the units
-  WD=$T/sys/usr/local/libexec/hangar-tailscale-watchdog; U=$T/sys/etc/systemd/system/hangar-tailscale-watchdog
-  [ -x $WD ] && cmp -s $WD $C/.agents/bin/tailscale-watchdog && grep -qx 'ExecStart=/usr/local/libexec/hangar-tailscale-watchdog' $U.service && grep -qx 'OnClockChange=true' $U.timer && ! grep -q OnUnitActiveSec $U.timer && pass "12e setup installs the watchdog script and units" || { fail 12e; ls -R $T/sys; }
 fi
-
-# 13 Tailscale watchdog: restarts tailscaled when the clock jumps ahead of uptime, as on a wake
-W=$T/wd; mkdir -p $W/bin; export HANGAR_WATCHDOG_STATE=$W/state HANGAR_WATCHDOG_UPTIME=$W/uptime
-printf '#!/bin/sh\necho "systemctl $*" >> %s/calls\n' $W > $W/bin/systemctl; chmod +x $W/bin/systemctl
-up(){ echo "$(( $(date +%s) - $1 )).50 0.00" > $W/uptime; }   # uptime that puts the wall-clock offset at $1
-wd(){ PATH=$W/bin:/usr/bin:/bin bash $C/.agents/bin/tailscale-watchdog > $W/out 2>&1; }
-restarts(){ grep -c 'restart tailscaled' $W/calls 2>/dev/null || echo 0; }
-up 1000; wd
-[ "$(restarts)" = 0 ] && pass "13a the first run only records the offset" || { fail 13a; cat $W/out; }
-up 1060; wd
-[ "$(restarts)" = 0 ] && pass "13b a small clock correction is not a wake" || { fail 13b; cat $W/out; }
-up 21060; wd
-[ "$(restarts)" = 1 ] && grep -q 'woke after 2000[0-9]s frozen' $W/out && pass "13c a frozen VM's wake restarts tailscaled" || { fail 13c; cat $W/out; }
-wd
-[ "$(restarts)" = 1 ] && pass "13d the next run after a wake leaves it alone" || { fail 13d; cat $W/out; }
-unset HANGAR_WATCHDOG_STATE HANGAR_WATCHDOG_UPTIME
 
 rm -rf $T
 if [ $FAILS = 0 ]; then echo "ALL PASS"; else echo "SOME FAILED"; exit 1; fi

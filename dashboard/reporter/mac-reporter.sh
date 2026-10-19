@@ -134,7 +134,7 @@ report_once() {
   fi
   error=$(curl -fsS -o /dev/null -w '%{http_code}' --connect-timeout 3 --max-time 5 -H 'Content-Type: application/json' \
     -d "{\"machine\":\"$machine\",\"cpu\":$cpu,\"ram\":{\"used\":$used,\"total\":$total},\"disks\":[{\"name\":\"Macintosh HD\",\"used\":$disk_used,\"total\":$disk_total}]$temp_field$vpn_field$process_field}" \
-    "${HANGAR_DASHBOARD_URL:-https://stormtrooper-linux.taila332e5.ts.net/api/report}" 2>&1) || status=$?
+    "${HANGAR_DASHBOARD_URL:-https://stormtrooper.taila332e5.ts.net/api/report}" 2>&1) || status=$?
   [ "$status" = 0 ] && [[ "$error" == 2[0-9][0-9] ]] || { printf 'Reporter: %s\n' "$(printf '%s' "$error" | tr '\r\n' '  ')" >&2; return 1; }
 }
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
