@@ -224,6 +224,17 @@ if grep -qi microsoft /proc/version 2>/dev/null; then
   grep -q 'SUB_SLEEP UNATTENDSLEEP 0' $T/ps-calls && grep -q 'the PC now stays awake after a remote wake' $T/out && pass "12e setup turns off the unattended sleep timeout" || { fail 12e; cat $T/out $T/ps-calls; }
   : > $T/ps-calls; PS_OUT=0 hg setup </dev/null >$T/out 2>&1; rc=$?
   [ $rc = 0 ] && ! grep -q UNATTENDSLEEP $T/ps-calls && grep -q 'the PC stays awake after a remote wake' $T/out && pass "12f with it already off, setup leaves it" || { fail 12f; cat $T/out $T/ps-calls; }
+  # 12i dev servers: setup installs hangar-ports.service; each pass forwards every port Ubuntu opens to all addresses,
+  # drops the forwards it made once their port closes, and leaves the other forwards alone
+  U=$C/.config/systemd/user/hangar-ports.service
+  grep -qF "ExecStart=\"$C/.agents/bin/hangar\" _ports" $U && grep -q 'systemctl --user restart hangar-ports.service' $CALLS && pass "12i setup installs and starts hangar-ports.service" || { fail 12i; cat $U $T/out; }
+  mkdir -p "$WIN/Program Files/Tailscale"
+  printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %s/ts-calls\n[ "$1 $2" = "serve status" ] && cat %s/serve.json\nexit 0\n' $T $T > "$WIN/Program Files/Tailscale/tailscale.exe"; chmod +x "$WIN/Program Files/Tailscale/tailscale.exe"
+  stub ss 'printf "LISTEN 0 511 0.0.0.0:3000 0.0.0.0:*\nLISTEN 0 511 [::]:5173 [::]:*\nLISTEN 0 511 [::]:8080 [::]:*\nLISTEN 0 511 127.0.0.1:4318 0.0.0.0:*\nLISTEN 0 128 0.0.0.0:22 0.0.0.0:*\nLISTEN 0 128 *:40000 *:*\n"'
+  echo '{"TCP":{"22":{"TCPForward":"localhost:22"},"443":{"HTTPS":true},"5173":{"TCPForward":"localhost:5173"},"8080":{"TCPForward":"127.0.0.1:8080"},"9000":{"TCPForward":"127.0.0.1:9000"},"9001":{"TCPForward":"localhost:9001"}}}' > $T/serve.json
+  : > $T/ts-calls; timeout 1 env HOME=$C PATH=$SP bash $C/.agents/bin/hangar _ports >$T/out 2>&1
+  [ "$(grep -v '^serve status' $T/ts-calls)" = "$(printf 'serve --bg --tcp 3000 tcp://127.0.0.1:3000\nserve --tcp 9000 off')" ] && grep -q 'forwarding 3000' $T/out && pass "12j a pass forwards new ports and drops its closed ones, nothing else" || { fail 12j; cat $T/ts-calls $T/out; }
+  rm $ST/ss; rm "$WIN/Program Files/Tailscale/tailscale.exe"
   export HANGAR_C_DRIVE=$T/no-c-drive
 fi
 
