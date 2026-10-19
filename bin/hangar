@@ -228,6 +228,20 @@ setup_temps() {
   else rm -f "$MAC_TEMPS.new"; warn "couldn't build the CPU temperature helper from $src"; fi
 }
 
+startup_dir() { # the Windows user's Startup folder, as a WSL path
+  local appdata; appdata="$("$C_DRIVE/Windows/System32/cmd.exe" /c 'echo %APPDATA%' 2>/dev/null | tr -d '\r' || true)"
+  [ -n "$appdata" ] && printf '%s/Microsoft/Windows/Start Menu/Programs/Startup\n' "$(wslpath "$appdata" 2>/dev/null)"
+}
+
+setup_startup() {
+  say "Ubuntu at sign-in"
+  local dir; dir="$(startup_dir || true)"
+  if [ -z "$dir" ]; then warn "couldn't find Windows' Startup folder; Ubuntu won't start by itself after a reboot"; return; fi
+  if cmp -s "$REPO/windows/start-ubuntu.cmd" "$dir/start-ubuntu.cmd"; then ok "Windows starts Ubuntu at sign-in"; return; fi
+  if mkdir -p "$dir" && cp "$REPO/windows/start-ubuntu.cmd" "$dir/"; then ok "Windows now starts Ubuntu at sign-in"
+  else warn "couldn't copy start-ubuntu.cmd to $dir; Ubuntu won't start by itself after a reboot"; fi
+}
+
 # Windows counts a wake from the network as unattended and sleeps again after two idle minutes,
 # since nobody touches the keyboard or mouse. 0 turns that off: the PC sleeps only when told to.
 unattended_sleep() { # the active power plan's unattended sleep timeout on mains, in seconds; nothing if unset
@@ -281,7 +295,7 @@ cmd_setup() {
     fi
   done
   if [ "$OS" = Darwin ]; then setup_temps; setup_reporter; fi
-  if is_wsl; then setup_hwinfo; setup_wake; fi
+  if is_wsl; then setup_hwinfo; setup_startup; setup_wake; fi
   if [ "$FAILED" = 1 ]; then say "${R}Setup finished with errors.${N}"; exit 1; fi
   say "Done. Run 'hangar doctor' to check the whole machine."
 }
@@ -443,6 +457,10 @@ cmd_doctor() {
         bad "no $cfg; see README for the settings"
       fi
       if systemctl is-active --quiet tailscaled 2>/dev/null; then warn "Tailscale runs inside Ubuntu too; Windows' Tailscale is enough, so run 'sudo tailscale logout && sudo apt purge -y tailscale'"; fi
+      local startup; startup="$(startup_dir || true)/start-ubuntu.cmd"
+      if cmp -s "$REPO/windows/start-ubuntu.cmd" "$startup"; then ok "Windows starts Ubuntu at sign-in"
+      elif [ -f "$startup" ]; then warn "$startup differs from the repo's; run 'hangar setup'"
+      else bad "nothing starts Ubuntu at sign-in, so T3 Code and the Dashboard stay down after a reboot; run 'hangar setup'"; fi
       if [ "$(unattended_sleep)" = 0 ]; then ok "the PC stays awake after a remote wake"
       else warn "the PC sleeps again two minutes after a remote wake; run 'hangar setup'"; fi
     fi
@@ -875,7 +893,8 @@ cmd_help() {
 hangar: keep this machine's agent setup in step with $REPO
 
   setup     link config, install skill dependencies; on macOS, build the temperature helper and load the Dashboard reporter;
-            on the PC, set up HWiNFO64 for the CPU temperature (one UAC prompt)
+            on the PC, set up HWiNFO64 for the CPU temperature (one UAC prompt), start Ubuntu at sign-in
+            and keep the PC awake after a remote wake
   sync      commit this machine's changes, pull the other machine's, push, apply
   doctor    check links, PATH, T3 service, browser, WSL, Dashboard and temperature
   update    update tools and skills; rebuild and restart Dashboard on Linux

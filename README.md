@@ -45,7 +45,7 @@ instanceIdleTimeout=-1
 autoMemoryReclaim=gradual
 ```
 
-Add a Task Scheduler task that runs `wsl.exe -d Ubuntu --exec /bin/true` at logon, so the server comes up after a reboot.
+`hangar setup` puts `windows/start-ubuntu.cmd` in your Windows Startup folder; it starts Ubuntu at sign-in, so the server comes up after a reboot.
 
 In Ubuntu:
 
