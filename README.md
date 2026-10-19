@@ -39,6 +39,7 @@ In Windows, create `C:\Users\<you>\.wslconfig`, then run `wsl --shutdown` in Pow
 [wsl2]
 memory=16GB
 processors=8
+networkingMode=mirrored
 [general]
 instanceIdleTimeout=-1
 [experimental]
@@ -63,13 +64,15 @@ hangar doctor
 
 Clone projects into the Linux home folder, not under `/mnt/c`.
 
-Windows sleep freezes Ubuntu, and on wake Tailscale inside it stays offline until `tailscaled` restarts: it keeps waiting on a connection to Tailscale's server that died during the sleep. `hangar setup` installs a watchdog for this, `hangar-tailscale-watchdog.timer`, which restarts it as soon as a wake sets the clock forward. It runs only then and once at boot; nothing polls. Its log: `journalctl -u hangar-tailscale-watchdog`.
+Install Tailscale for Windows, not inside Ubuntu: it serves the Dashboard to the tailnet and passes requests to Ubuntu over `localhost`. A second Tailscale inside Ubuntu keeps breaking: Windows sleep freezes Ubuntu and strands its connection to Tailscale's server, and a Windows VPN lowers the packet size Ubuntu may send below what Tailscale needs. `networkingMode=mirrored` gives Ubuntu Windows' own network, so a VPN and sleep reach it the way they reach Windows.
+
+Windows counts a wake from the network as unattended and sleeps again after two idle minutes, since nobody touches the keyboard or mouse. `hangar setup` sets that timeout to never, so the PC sleeps only when told to.
 
 ## Dashboard
 
-Shows each Machine's Usage, whether it is Online, when it was last seen and its last 24 hours of History. Open https://stormtrooper-linux.taila332e5.ts.net while connected to Tailscale.
+Shows each Machine's Usage, whether it is Online, when it was last seen and its last 24 hours of History. Open https://stormtrooper.taila332e5.ts.net while connected to Tailscale.
 
-`hangar install` builds the page, starts `hangar-dashboard.service` on Linux and runs `tailscale serve --bg 4318`. Install Node 24 first; the service records its absolute path, and install/update refresh that path after a Node upgrade. If Tailscale refuses permission, run `sudo tailscale set --operator=$USER`. `hangar update` rebuilds the page and restarts the service. `hangar setup` on the Mac loads its reporter with launchd.
+`hangar install` builds the page, starts `hangar-dashboard.service` on Linux and runs `tailscale serve --bg 4318` (on the PC, Windows' `tailscale.exe`). Install Node 24 first; the service records its absolute path, and install/update refresh that path after a Node upgrade. On a Linux machine outside WSL, if Tailscale refuses permission, run `sudo tailscale set --operator=$USER`. `hangar update` rebuilds the page and restarts the service. `hangar setup` on the Mac loads its reporter with launchd.
 
 The PC collects Windows Usage from WSL; the Mac sends a report every ten seconds. Machine names live in `dashboard/machines.json`; the contract is in `dashboard/API.md`. Reports and History stay in `~/.local/state/hangar/dashboard.db`. Override the server port or database with `HANGAR_DASHBOARD_PORT` and `HANGAR_DASHBOARD_DB`. The Mac reporter accepts `HANGAR_MACHINE` and `HANGAR_DASHBOARD_URL` (the full `/api/report` URL); set these in the launchd plist's `EnvironmentVariables` when needed.
 
