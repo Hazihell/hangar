@@ -65,6 +65,8 @@ Clone projects into the Linux home folder, not under `/mnt/c`.
 
 Install Tailscale for Windows, not inside Ubuntu: it serves the Dashboard to the tailnet and passes requests to Ubuntu over `localhost`. A second Tailscale inside Ubuntu keeps breaking: Windows sleep freezes Ubuntu and strands its connection to Tailscale's server, and a Windows VPN lowers the packet size Ubuntu may send below what Tailscale needs.
 
+Dev servers in Ubuntu that listen on every address (Vite's `Network:` line, `--host`, `0.0.0.0`) open on other tailnet machines at `http://stormtrooper:<port>`. `hangar setup` starts `hangar-ports.service`, which watches the ports Ubuntu opens from 1024 up to the ephemeral range and adds a TCP forward in Windows' Tailscale for each one, then removes it when the port closes. It leaves forwards it didn't make alone. A server bound only to `localhost` stays private. The `Network:` addresses a dev server prints are Ubuntu's own and don't work from other machines.
+
 Windows counts a wake from the network as unattended and sleeps again after two idle minutes, since nobody touches the keyboard or mouse. `hangar setup` sets that timeout to never, so the PC sleeps only when told to.
 
 ## Dashboard
