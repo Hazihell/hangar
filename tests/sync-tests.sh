@@ -6,6 +6,8 @@ SRC="$(cd "$(dirname "$0")/.." && pwd)"; T=$(mktemp -d /tmp/agents-t.XXXX); cd $
 mkdir -p $T/nosys; printf '#!/bin/sh\n[ "$2" = is-active ] && exit 3\nexit 0\n' > $T/nosys/systemctl; chmod +x $T/nosys/systemctl; export PATH=$T/nosys:$PATH
 # setup on WSL asks Windows about HWiNFO; a drive that isn't there keeps every test away from the real one.
 export HANGAR_C_DRIVE=$T/no-c-drive
+# setup on WSL installs the Tailscale watchdog; a writable scratch root keeps it out of the real /etc, without sudo.
+export HANGAR_SYS_ROOT=$T/sys; mkdir -p $T/sys/etc/systemd/system
 pass(){ echo "PASS $*"; }; fail(){ echo "FAIL $*"; FAILS=1; }; FAILS=0
 edit(){ perl -pi -e "$1" "$2"; }   # in-place edit; sed -i differs between BSD and GNU
 # Seed a fresh repo from the working tree, without its .git, so no real remote is ever reachable
@@ -216,7 +218,26 @@ if grep -qi microsoft /proc/version 2>/dev/null; then
   : > $T/ps-calls; hg setup </dev/null >$T/out 2>&1; rc=$?
   [ $rc = 0 ] && [ ! -s $T/ps-calls ] && grep -q 'HWiNFO64 starts at logon' $T/out && pass "12d with the task in place, setup asks for nothing" || { fail 12d; cat $T/out $T/ps-calls; }
   export HANGAR_C_DRIVE=$T/no-c-drive
+  # 12e setup installs the watchdog: its own copy of the script, and the units
+  WD=$T/sys/usr/local/libexec/hangar-tailscale-watchdog; U=$T/sys/etc/systemd/system/hangar-tailscale-watchdog
+  [ -x $WD ] && cmp -s $WD $C/.agents/bin/tailscale-watchdog && grep -qx 'ExecStart=/usr/local/libexec/hangar-tailscale-watchdog' $U.service && grep -qx 'OnClockChange=true' $U.timer && ! grep -q OnUnitActiveSec $U.timer && pass "12e setup installs the watchdog script and units" || { fail 12e; ls -R $T/sys; }
 fi
+
+# 13 Tailscale watchdog: restarts tailscaled when the clock jumps ahead of uptime, as on a wake
+W=$T/wd; mkdir -p $W/bin; export HANGAR_WATCHDOG_STATE=$W/state HANGAR_WATCHDOG_UPTIME=$W/uptime
+printf '#!/bin/sh\necho "systemctl $*" >> %s/calls\n' $W > $W/bin/systemctl; chmod +x $W/bin/systemctl
+up(){ echo "$(( $(date +%s) - $1 )).50 0.00" > $W/uptime; }   # uptime that puts the wall-clock offset at $1
+wd(){ PATH=$W/bin:/usr/bin:/bin bash $C/.agents/bin/tailscale-watchdog > $W/out 2>&1; }
+restarts(){ grep -c 'restart tailscaled' $W/calls 2>/dev/null || echo 0; }
+up 1000; wd
+[ "$(restarts)" = 0 ] && pass "13a the first run only records the offset" || { fail 13a; cat $W/out; }
+up 1060; wd
+[ "$(restarts)" = 0 ] && pass "13b a small clock correction is not a wake" || { fail 13b; cat $W/out; }
+up 21060; wd
+[ "$(restarts)" = 1 ] && grep -q 'woke after 2000[0-9]s frozen' $W/out && pass "13c a frozen VM's wake restarts tailscaled" || { fail 13c; cat $W/out; }
+wd
+[ "$(restarts)" = 1 ] && pass "13d the next run after a wake leaves it alone" || { fail 13d; cat $W/out; }
+unset HANGAR_WATCHDOG_STATE HANGAR_WATCHDOG_UPTIME
 
 rm -rf $T
 if [ $FAILS = 0 ]; then echo "ALL PASS"; else echo "SOME FAILED"; exit 1; fi

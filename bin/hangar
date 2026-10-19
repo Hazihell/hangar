@@ -44,6 +44,13 @@ C_DRIVE="${HANGAR_C_DRIVE:-/mnt/c}"   # where WSL mounts C:; tests point it at a
 HWINFO_TASK="Hangar HWiNFO"
 MAC_TEMPS="$HOME/.local/state/hangar/temps"
 winps() { "$C_DRIVE/Windows/System32/WindowsPowerShell/v1.0/powershell.exe" -NoProfile -NonInteractive "$@"; }
+
+# ── Tailscale watchdog ────────────────────────────────────────────────────────
+# Restarts tailscaled after Windows sleep; see bin/tailscale-watchdog. Root runs a copy, not the repo's file.
+SYS_ROOT="${HANGAR_SYS_ROOT:-}"   # where system files go; tests point it at a scratch folder
+WATCHDOG=hangar-tailscale-watchdog
+WATCHDOG_BIN="/usr/local/libexec/$WATCHDOG"
+WATCHDOG_UNITS="/etc/systemd/system"
 hwinfo_task() { "$C_DRIVE/Windows/System32/schtasks.exe" /query /tn "$HWINFO_TASK" >/dev/null 2>&1; }
 hwinfo_cpu() { # the CPU temperature HWiNFO reports to Gadget, found by label as the collector does; nothing if it isn't
   winps -Command 'try { $v = Get-ItemProperty -Path HKCU:\Software\HWiNFO64\VSB -ErrorAction Stop; $l = @($v.PSObject.Properties | Where-Object { $_.Name -match "^Label\d+$" -and $_.Value -eq "CPU (Tctl/Tdie)" })[0]; if ($l) { $v.("ValueRaw" + $l.Name.Substring(5)) } } catch { }' 2>/dev/null | tr -d '\r'
@@ -222,6 +229,54 @@ setup_temps() {
   else rm -f "$MAC_TEMPS.new"; warn "couldn't build the CPU temperature helper from $src"; fi
 }
 
+watchdog_files() { # each file the watchdog needs: <source>|<installed path>|<mode>
+  printf '%s|%s|755\n' "$REPO/bin/tailscale-watchdog" "$SYS_ROOT$WATCHDOG_BIN"
+  printf '%s|%s|644\n' "$1/service" "$SYS_ROOT$WATCHDOG_UNITS/$WATCHDOG.service" "$1/timer" "$SYS_ROOT$WATCHDOG_UNITS/$WATCHDOG.timer"
+}
+
+write_watchdog_units() { # write_watchdog_units <dir>
+  cat > "$1/service" <<EOF
+[Unit]
+Description=Restart tailscaled after Windows sleep
+After=tailscaled.service
+
+[Service]
+Type=oneshot
+ExecStart=$WATCHDOG_BIN
+EOF
+  # A wake sets the clock forward, which OnClockChange catches at once. The run at boot records
+  # the clock offset the next wake is measured against.
+  cat > "$1/timer" <<EOF
+[Unit]
+Description=Check for a wake from Windows sleep
+
+[Timer]
+OnClockChange=true
+OnBootSec=1min
+
+[Install]
+WantedBy=timers.target
+EOF
+}
+
+setup_watchdog() {
+  say "Tailscale watchdog"
+  if ! command -v tailscale >/dev/null; then warn "no tailscale here; install it, then run 'hangar setup' again"; return; fi
+  local tmp src dest mode as=sudo changed=0
+  [ -w "$SYS_ROOT$WATCHDOG_UNITS" ] && as=
+  tmp="$(mktemp -d)"
+  write_watchdog_units "$tmp"
+  while IFS='|' read -r src dest mode; do
+    cmp -s "$src" "$dest" && continue
+    $as install -D -m "$mode" "$src" "$dest" || { rm -rf "$tmp"; warn "couldn't install $dest; tailscaled won't recover by itself after sleep"; return; }
+    changed=1
+  done < <(watchdog_files "$tmp")
+  rm -rf "$tmp"
+  if [ "$changed" = 0 ] && systemctl is-active --quiet "$WATCHDOG.timer"; then ok "restarts tailscaled after sleep"; return; fi
+  if $as systemctl daemon-reload && $as systemctl enable "$WATCHDOG.timer" && $as systemctl restart "$WATCHDOG.timer"; then ok "watchdog installed; restarts tailscaled after sleep"
+  else warn "watchdog timer didn't start; check 'systemctl status $WATCHDOG.timer'"; fi
+}
+
 # ── setup ─────────────────────────────────────────────────────────────────────
 cmd_setup() {
   say "Linking config into place"
@@ -262,7 +317,7 @@ cmd_setup() {
     fi
   done
   if [ "$OS" = Darwin ]; then setup_temps; setup_reporter; fi
-  if is_wsl; then setup_hwinfo; fi
+  if is_wsl; then setup_hwinfo; setup_watchdog; fi
   if [ "$FAILED" = 1 ]; then say "${R}Setup finished with errors.${N}"; exit 1; fi
   say "Done. Run 'hangar doctor' to check the whole machine."
 }
@@ -423,6 +478,9 @@ cmd_doctor() {
       else
         bad "no $cfg; see README for the settings"
       fi
+      if ! systemctl is-active --quiet "$WATCHDOG.timer" 2>/dev/null; then bad "Tailscale watchdog off, so tailscaled stays offline after sleep; run 'hangar setup'"
+      elif ! cmp -s "$REPO/bin/tailscale-watchdog" "$SYS_ROOT$WATCHDOG_BIN"; then warn "Tailscale watchdog out of date; run 'hangar setup'"
+      else ok "Tailscale watchdog restarts tailscaled after sleep"; fi
     fi
   fi
 
