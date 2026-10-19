@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Restart tailscaled when the WSL VM wakes from Windows sleep.
+# Sleep freezes the VM. On wake, tailscaled keeps waiting on a control connection that died
+# while it was frozen and never dials a new one, so the tailnet shows this machine offline and
+# its `tailscale serve` URLs stop working. A restart dials fresh.
+# Run as root by hangar-tailscale-watchdog.timer, once at boot and on each clock change; `hangar setup` installs it.
+set -uo pipefail
+
+STATE="${HANGAR_WATCHDOG_STATE:-/run/hangar-tailscale-watchdog}"
+UPTIME="${HANGAR_WATCHDOG_UPTIME:-/proc/uptime}"
+JUMP=120  # seconds the wall clock must outrun uptime to count as a wake
+mkdir -p "$STATE"
+
+# Wall clock minus uptime. A frozen VM's uptime stops while its wall clock is set forward on wake,
+# so this grows by the time spent asleep. Other clock changes, like chrony's corrections, are small.
+offset=$(( $(date +%s) - $(cut -d. -f1 "$UPTIME") ))
+last_offset="$(cat "$STATE/offset" 2>/dev/null || echo "$offset")"
+echo "$offset" > "$STATE/offset"
+if [ $(( offset - last_offset )) -ge "$JUMP" ]; then
+  echo "woke after $(( offset - last_offset ))s frozen; restarting tailscaled"
+  systemctl restart tailscaled.service
+fi

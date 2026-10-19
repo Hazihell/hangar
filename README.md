@@ -63,6 +63,8 @@ hangar doctor
 
 Clone projects into the Linux home folder, not under `/mnt/c`.
 
+Windows sleep freezes Ubuntu, and on wake Tailscale inside it stays offline until `tailscaled` restarts: it keeps waiting on a connection to Tailscale's server that died during the sleep. `hangar setup` installs a watchdog for this, `hangar-tailscale-watchdog.timer`, which restarts it as soon as a wake sets the clock forward. It runs only then and once at boot; nothing polls. Its log: `journalctl -u hangar-tailscale-watchdog`.
+
 ## Dashboard
 
 Shows each Machine's Usage, whether it is Online, when it was last seen and its last 24 hours of History. Open https://stormtrooper-linux.taila332e5.ts.net while connected to Tailscale.
