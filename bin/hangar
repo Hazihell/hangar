@@ -442,8 +442,6 @@ cmd_doctor() {
       else
         bad "no $cfg; see README for the settings"
       fi
-      if [ "$(wslinfo --networking-mode 2>/dev/null)" = mirrored ]; then ok "Ubuntu shares Windows' network (mirrored)"
-      else bad "Ubuntu has its own network behind Windows, which a VPN or sleep breaks; set 'networkingMode=mirrored' under [wsl2] in $cfg, then 'wsl --shutdown'"; fi
       if systemctl is-active --quiet tailscaled 2>/dev/null; then warn "Tailscale runs inside Ubuntu too; Windows' Tailscale is enough, so run 'sudo tailscale logout && sudo apt purge -y tailscale'"; fi
       if [ "$(unattended_sleep)" = 0 ]; then ok "the PC stays awake after a remote wake"
       else warn "the PC sleeps again two minutes after a remote wake; run 'hangar setup'"; fi

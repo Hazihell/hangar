@@ -39,7 +39,6 @@ In Windows, create `C:\Users\<you>\.wslconfig`, then run `wsl --shutdown` in Pow
 [wsl2]
 memory=16GB
 processors=8
-networkingMode=mirrored
 [general]
 instanceIdleTimeout=-1
 [experimental]
@@ -64,7 +63,7 @@ hangar doctor
 
 Clone projects into the Linux home folder, not under `/mnt/c`.
 
-Install Tailscale for Windows, not inside Ubuntu: it serves the Dashboard to the tailnet and passes requests to Ubuntu over `localhost`. A second Tailscale inside Ubuntu keeps breaking: Windows sleep freezes Ubuntu and strands its connection to Tailscale's server, and a Windows VPN lowers the packet size Ubuntu may send below what Tailscale needs. `networkingMode=mirrored` gives Ubuntu Windows' own network, so a VPN and sleep reach it the way they reach Windows.
+Install Tailscale for Windows, not inside Ubuntu: it serves the Dashboard to the tailnet and passes requests to Ubuntu over `localhost`. A second Tailscale inside Ubuntu keeps breaking: Windows sleep freezes Ubuntu and strands its connection to Tailscale's server, and a Windows VPN lowers the packet size Ubuntu may send below what Tailscale needs.
 
 Windows counts a wake from the network as unattended and sleeps again after two idle minutes, since nobody touches the keyboard or mouse. `hangar setup` sets that timeout to never, so the PC sleeps only when told to.
 
