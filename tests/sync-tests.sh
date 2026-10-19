@@ -215,6 +215,11 @@ if grep -qi microsoft /proc/version 2>/dev/null; then
   [ $rc = 0 ] && cmp -s $T/appdata/hangar/hwinfo-setup.ps1 $C/.agents/dashboard/windows/hwinfo-setup.ps1 && grep -q 'Start-Process powershell.exe -Verb RunAs -Wait -PassThru' $T/ps-calls && grep -qF 'W:\appdata\hangar\hwinfo-setup.ps1' $T/ps-calls && grep -q 'HWiNFO64 set up to start at logon' $T/out && pass "12c the script is copied to Windows and run elevated" || { fail 12c; cat $T/out $T/ps-calls; }
   : > $T/ps-calls; hg setup </dev/null >$T/out 2>&1; rc=$?
   [ $rc = 0 ] && ! grep -q 'RunAs' $T/ps-calls && grep -q 'HWiNFO64 starts at logon' $T/out && pass "12d with the task in place, setup asks for nothing" || { fail 12d; cat $T/out $T/ps-calls; }
+  # 12g Ubuntu at sign-in: setup puts the repo's start-ubuntu.cmd in the Startup folder, and replaces a stale one
+  SU="$T/appdata/Microsoft/Windows/Start Menu/Programs/Startup/start-ubuntu.cmd"
+  cmp -s "$SU" $C/.agents/windows/start-ubuntu.cmd && grep -q 'starts Ubuntu at sign-in' $T/out && pass "12g setup installs start-ubuntu.cmd" || { fail 12g; cat $T/out; }
+  echo stale > "$SU"; hg setup </dev/null >$T/out 2>&1
+  cmp -s "$SU" $C/.agents/windows/start-ubuntu.cmd && pass "12h setup replaces a stale start-ubuntu.cmd" || { fail 12h; cat $T/out; }
   # 12e remote wake: setup turns off Windows' unattended sleep, once
   grep -q 'SUB_SLEEP UNATTENDSLEEP 0' $T/ps-calls && grep -q 'the PC now stays awake after a remote wake' $T/out && pass "12e setup turns off the unattended sleep timeout" || { fail 12e; cat $T/out $T/ps-calls; }
   : > $T/ps-calls; PS_OUT=0 hg setup </dev/null >$T/out 2>&1; rc=$?
