@@ -42,39 +42,6 @@ is_number() { [[ "${1:-}" =~ ^-?[0-9]+(\.[0-9]+)?$ ]]; }
 # On the PC, Tailscale runs in Windows and serves the Dashboard; Ubuntu has none of its own (see README).
 ts() { if is_wsl; then "$C_DRIVE/Program Files/Tailscale/tailscale.exe" "$@"; else tailscale "$@"; fi; }
 
-# A dev server Ubuntu runs for every address (its "Network:" line) reaches the tailnet through a TCP forward
-# in Windows' Tailscale, to Windows' localhost, which WSL hands on to Ubuntu. hangar-ports.service keeps
-# one forward per such port; it owns the forwards to 127.0.0.1 on the same port and leaves any other alone.
-open_ports() { # TCP ports Ubuntu listens on for every address, below the ephemeral range
-  ss -Hltn | awk '{ n = split($4, a, ":"); p = a[n]; h = substr($4, 1, length($4) - length(p) - 1)
-    if ((h == "0.0.0.0" || h == "[::]" || h == "*") && p >= 1024 && p < 32768) print p }' | sort -un
-}
-served_ports() { # "<port> <target>" for each TCP forward in Windows' Tailscale
-  ts serve status --json 2>/dev/null | tr -d '\r' | jq -r '.TCP // {} | to_entries[] | "\(.key) \(.value.TCPForward // "-")"'
-}
-sync_forwards() { # one pass: forward each open port nothing serves yet, drop the forwards whose port closed
-  local open served port target
-  open="$(open_ports)"
-  served="$(served_ports)" || { say "can't read Tailscale's forwards; is Tailscale for Windows running?"; return 1; }
-  for port in $open; do
-    grep -q "^$port " <<< "$served" && continue
-    if ts serve --bg --tcp "$port" "tcp://127.0.0.1:$port" >/dev/null 2>&1; then say "forwarding $port"; else say "couldn't forward $port"; fi
-  done
-  while read -r port target; do
-    [ "$target" = "127.0.0.1:$port" ] || continue
-    grep -qx "$port" <<< "$open" && continue
-    if ts serve --tcp "$port" off >/dev/null 2>&1; then say "stopped forwarding $port"; else say "couldn't stop forwarding $port"; fi
-  done <<< "$served"
-}
-forward_ports() { # hangar-ports.service: a pass whenever the open ports change, and every minute in case Tailscale lost its forwards
-  local last="" now tick=0
-  while :; do
-    now="$(open_ports)"
-    if [ "$now" != "$last" ] || [ $((tick % 30)) = 0 ]; then sync_forwards || true; last="$now"; fi
-    tick=$((tick + 1)); sleep 2
-  done
-}
-
 # ── Temperature ───────────────────────────────────────────────────────────────
 # The PC's CPU temperature comes from HWiNFO64, which a logon task starts with admin rights; the Mac's from a helper built here.
 C_DRIVE="${HANGAR_C_DRIVE:-/mnt/c}"   # where WSL mounts C:; tests point it at a stub
@@ -184,21 +151,13 @@ build_dashboard() {
   return "$rc"
 }
 
-install_unit() { # install_unit <name>: a user unit, its text on stdin; tells systemd only when it changed
-  local unit="$HOME/.config/systemd/user/$1" tmp
-  mkdir -p "$(dirname "$unit")"
-  tmp="$(mktemp)"; cat > "$tmp"
-  if ! cmp -s "$tmp" "$unit"; then
-    mv "$tmp" "$unit"
-    systemctl --user daemon-reload || return 1
-  else rm -f "$tmp"; fi
-}
-
 write_dashboard_unit() {
-  local node
+  local node unit="$HOME/.config/systemd/user/hangar-dashboard.service" tmp
   dashboard_node || return 1
   node="$(command -v node)"
-  install_unit hangar-dashboard.service <<EOF
+  mkdir -p "$(dirname "$unit")"
+  tmp="$(mktemp)"
+  cat > "$tmp" <<EOF
 [Unit]
 Description=Hangar Dashboard
 After=network.target
@@ -211,6 +170,10 @@ RestartSec=5
 [Install]
 WantedBy=default.target
 EOF
+  if ! cmp -s "$tmp" "$unit"; then
+    mv "$tmp" "$unit"
+    systemctl --user daemon-reload || return 1
+  else rm -f "$tmp"; fi
 }
 
 install_dashboard() {
@@ -292,27 +255,6 @@ setup_wake() {
   else warn "couldn't change Windows' unattended sleep timeout; the PC sleeps again two minutes after a remote wake"; fi
 }
 
-setup_ports() {
-  say "Dev servers on the tailnet"
-  if install_unit hangar-ports.service <<EOF
-[Unit]
-Description=Hangar: forward Ubuntu's dev servers through Windows' Tailscale
-After=network.target
-
-[Service]
-ExecStart="$REPO/bin/hangar" _ports
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=default.target
-EOF
-  then
-    if systemctl --user enable hangar-ports.service && systemctl --user restart hangar-ports.service; then ok "dev servers reach the tailnet at stormtrooper:<port>"
-    else warn "hangar-ports.service failed; check 'systemctl --user status hangar-ports.service'"; fi
-  else warn "couldn't install hangar-ports.service; dev servers don't reach the tailnet"; fi
-}
-
 # ── setup ─────────────────────────────────────────────────────────────────────
 cmd_setup() {
   say "Linking config into place"
@@ -353,7 +295,7 @@ cmd_setup() {
     fi
   done
   if [ "$OS" = Darwin ]; then setup_temps; setup_reporter; fi
-  if is_wsl; then setup_hwinfo; setup_startup; setup_wake; setup_ports; fi
+  if is_wsl; then setup_hwinfo; setup_startup; setup_wake; fi
   if [ "$FAILED" = 1 ]; then say "${R}Setup finished with errors.${N}"; exit 1; fi
   say "Done. Run 'hangar doctor' to check the whole machine."
 }
@@ -514,6 +456,8 @@ cmd_doctor() {
       else
         bad "no $cfg; see README for the settings"
       fi
+      if [ "$(wslinfo --networking-mode 2>/dev/null)" = mirrored ]; then ok "mirrored networking, so dev servers reach the tailnet"
+      else warn "set 'networkingMode=mirrored' under [wsl2] in $cfg, then 'wsl --shutdown'; until then dev servers don't reach the tailnet"; fi
       if systemctl is-active --quiet tailscaled 2>/dev/null; then warn "Tailscale runs inside Ubuntu too; Windows' Tailscale is enough, so run 'sudo tailscale logout && sudo apt purge -y tailscale'"; fi
       local startup; startup="$(startup_dir || true)/start-ubuntu.cmd"
       if cmp -s "$REPO/windows/start-ubuntu.cmd" "$startup"; then ok "Windows starts Ubuntu at sign-in"
@@ -521,10 +465,6 @@ cmd_doctor() {
       else bad "nothing starts Ubuntu at sign-in, so T3 Code and the Dashboard stay down after a reboot; run 'hangar setup'"; fi
       if [ "$(unattended_sleep)" = 0 ]; then ok "the PC stays awake after a remote wake"
       else warn "the PC sleeps again two minutes after a remote wake; run 'hangar setup'"; fi
-      if systemctl --user is-active --quiet hangar-ports.service 2>/dev/null; then
-        local fwd; fwd="$(served_ports 2>/dev/null | awk '$2 == "127.0.0.1:" $1 { printf "%s%s", s, $1; s = ", " }' || true)"
-        ok "dev servers reach the tailnet${fwd:+ ${D}(forwarding $fwd)${N}}"
-      else bad "hangar-ports.service stopped, so dev servers don't reach the tailnet; run 'hangar setup'"; fi
     fi
   fi
 
@@ -955,8 +895,8 @@ cmd_help() {
 hangar: keep this machine's agent setup in step with $REPO
 
   setup     link config, install skill dependencies; on macOS, build the temperature helper and load the Dashboard reporter;
-            on the PC, set up HWiNFO64 for the CPU temperature (one UAC prompt), start Ubuntu at sign-in,
-            keep the PC awake after a remote wake and forward dev servers through Windows' Tailscale
+            on the PC, set up HWiNFO64 for the CPU temperature (one UAC prompt), start Ubuntu at sign-in
+            and keep the PC awake after a remote wake
   sync      commit this machine's changes, pull the other machine's, push, apply
   doctor    check links, PATH, T3 service, browser, WSL, Dashboard and temperature
   update    update tools and skills; rebuild and restart Dashboard on Linux
@@ -970,6 +910,5 @@ case "${1:-help}" in
   setup) cmd_setup ;; sync) cmd_sync ;; doctor) cmd_doctor ;;
   update) shift; cmd_update "$@" ;; outdated) shift; cmd_outdated "$@" ;;
   _refresh) refresh_hangar ;;   # internal: the second half of 'update hangar', run by the new code
-  _ports) forward_ports ;;      # internal: what hangar-ports.service runs
   install) cmd_install ;; *) cmd_help ;;
 esac
