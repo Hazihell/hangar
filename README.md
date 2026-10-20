@@ -63,9 +63,11 @@ hangar doctor
 
 Clone projects into the Linux home folder, not under `/mnt/c`.
 
-Install Tailscale for Windows, not inside Ubuntu: it serves the Dashboard to the tailnet and passes requests to Ubuntu over `localhost`. A second Tailscale inside Ubuntu keeps breaking: Windows sleep freezes Ubuntu and strands its connection to Tailscale's server, and a Windows VPN lowers the packet size Ubuntu may send below what Tailscale needs.
+Install Tailscale for Windows, not inside Ubuntu: it carries the tailnet into Ubuntu through mirrored networking (below). A second Tailscale inside Ubuntu keeps breaking: Windows sleep freezes Ubuntu and strands its connection to Tailscale's server, and a Windows VPN lowers the packet size Ubuntu may send below what Tailscale needs.
 
 Put `networkingMode=mirrored` under `[wsl2]` in `.wslconfig`, then run `wsl --shutdown`. Ubuntu then shares Windows' network: Tailscale, the LAN and any Windows VPN, each with its own packet size. A dev server listening on every address (Vite's `--host`, `0.0.0.0`) opens on the tailnet at `http://stormtrooper:<port>`. Tailscale's own Windows firewall rule lets the tailnet in; the LAN stays out. Windows and Ubuntu share `localhost` ports, so a port can't be used on both. The first boot after the switch can keep the Dashboard from starting for two minutes, until Windows releases the connections it had to the old `localhost:4318`; systemd keeps retrying it until it starts.
+
+Mirrored networking breaks connections that Windows itself opens into Ubuntu after sleep or a Windows VPN going down ([WSL#40343](https://github.com/microsoft/WSL/issues/40343)), until the next reboot; connections arriving over the tailnet keep working. So nothing on the PC should depend on Windows reaching Ubuntu: the Dashboard serves the tailnet itself rather than through Windows' `tailscale serve`.
 
 Windows counts a wake from the network as unattended and sleeps again after two idle minutes, since nobody touches the keyboard or mouse. `hangar setup` sets that timeout to never, so the PC sleeps only when told to.
 
@@ -73,7 +75,7 @@ Windows counts a wake from the network as unattended and sleeps again after two 
 
 Shows each Machine's Usage, whether it is Online, when it was last seen and its last 24 hours of History. Open https://stormtrooper.taila332e5.ts.net while connected to Tailscale.
 
-`hangar install` builds the page, starts `hangar-dashboard.service` on Linux and runs `tailscale serve --bg 4318` (on the PC, Windows' `tailscale.exe`). Install Node 24 first; the service records its absolute path, and install/update refresh that path after a Node upgrade. On a Linux machine outside WSL, if Tailscale refuses permission, run `sudo tailscale set --operator=$USER`. `hangar update` rebuilds the page and restarts the service. `hangar setup` on the Mac loads its reporter with launchd.
+`hangar install` builds the page and starts `hangar-dashboard.service` on Linux. On the PC, the service serves HTTPS on the tailnet at port 443 with the certificate Windows' `tailscale.exe cert` issues for the PC's name, asking again daily for renewals; `hangar install` lets Ubuntu users bind port 443 (`/etc/sysctl.d/60-hangar-dashboard.conf`) and turns off a `tailscale serve` left over from before. On a Linux machine outside WSL, `hangar install` runs `tailscale serve --bg 4318` instead. Install Node 24 first; the service records its absolute path, and install/update refresh that path after a Node upgrade. On a Linux machine outside WSL, if Tailscale refuses permission, run `sudo tailscale set --operator=$USER`. `hangar update` rebuilds the page and restarts the service. `hangar setup` on the Mac loads its reporter with launchd.
 
 The PC collects Windows Usage from WSL; the Mac sends a report every ten seconds. Machine names live in `dashboard/machines.json`; the contract is in `dashboard/API.md`. Reports and History stay in `~/.local/state/hangar/dashboard.db`. Override the server port or database with `HANGAR_DASHBOARD_PORT` and `HANGAR_DASHBOARD_DB`. The Mac reporter accepts `HANGAR_MACHINE` and `HANGAR_DASHBOARD_URL` (the full `/api/report` URL); set these in the launchd plist's `EnvironmentVariables` when needed.
 

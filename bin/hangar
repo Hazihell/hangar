@@ -39,7 +39,7 @@ is_wsl() { grep -qi microsoft /proc/version 2>/dev/null; }
 is_number() { [[ "${1:-}" =~ ^-?[0-9]+(\.[0-9]+)?$ ]]; }
 
 # ── Tailscale ─────────────────────────────────────────────────────────────────
-# On the PC, Tailscale runs in Windows and serves the Dashboard; Ubuntu has none of its own (see README).
+# On the PC, Tailscale runs in Windows; Ubuntu has none of its own, and the Dashboard answers the tailnet itself (see README).
 ts() { if is_wsl; then "$C_DRIVE/Program Files/Tailscale/tailscale.exe" "$@"; else tailscale "$@"; fi; }
 
 # ── Temperature ───────────────────────────────────────────────────────────────
@@ -181,9 +181,20 @@ install_dashboard() {
   build_dashboard || warn "Dashboard page build failed; keeping the previous page"
   if systemctl --user enable --now hangar-dashboard.service && systemctl --user restart hangar-dashboard.service; then ok "Dashboard service enabled"
   else warn "Dashboard service failed; check 'systemctl --user status hangar-dashboard.service'"; fi
-  if ts serve --bg 4318; then ok "Dashboard served through Tailscale"
-  elif is_wsl; then warn "Tailscale serve failed; is Tailscale for Windows running and signed in?"
+  if is_wsl; then tailnet_https
+  elif ts serve --bg 4318; then ok "Dashboard served through Tailscale"
   else warn "Tailscale serve failed; for permissions run 'sudo tailscale set --operator=$USER', then 'tailscale serve --bg 4318'"; fi
+}
+
+# On the PC the Dashboard serves HTTPS on port 443 itself, so Windows' `tailscale serve` must let go of it and Ubuntu must let a user take it.
+PORT_SYSCTL=/etc/sysctl.d/60-hangar-dashboard.conf
+tailnet_https() {
+  if [ "$(sysctl -n net.ipv4.ip_unprivileged_port_start)" -le 443 ]; then ok "Dashboard may listen on port 443"
+  elif printf '# The Hangar Dashboard serves HTTPS on port 443 itself (see README).\nnet.ipv4.ip_unprivileged_port_start=443\n' | sudo tee "$PORT_SYSCTL" >/dev/null && sudo sysctl -q -p "$PORT_SYSCTL"; then ok "Dashboard may listen on port 443"
+  else warn "couldn't let the Dashboard listen on port 443; run 'hangar install' again"; fi
+  if ! grep -qE '127\.0\.0\.1:4318|localhost:4318' <<< "$(ts serve status 2>/dev/null || true)"; then :
+  elif ts serve --https=443 off >/dev/null; then ok "Windows' Tailscale no longer proxies the Dashboard"
+  else warn "couldn't stop Windows' Tailscale proxying the Dashboard; run 'tailscale serve --https=443 off' in Windows"; fi
 }
 
 setup_reporter() {
@@ -473,7 +484,12 @@ cmd_doctor() {
     if systemctl --user is-active --quiet hangar-dashboard.service 2>/dev/null; then ok "Dashboard service running"
     else bad "Dashboard service stopped; run 'hangar install'"; fi
     local serve_status; serve_status="$(ts serve status 2>/dev/null || true)"
-    if grep -qE '127\.0\.0\.1:4318|localhost:4318' <<< "$serve_status"; then ok "Tailscale proxies Dashboard"
+    if is_wsl; then
+      local name; name="$(ts status --json 2>/dev/null | jq -r '.Self.DNSName // empty' | sed 's/\.$//')"
+      if grep -qE '127\.0\.0\.1:4318|localhost:4318' <<< "$serve_status"; then bad "Windows' Tailscale still proxies the Dashboard, which breaks after sleep; run 'hangar install'"
+      elif [ -n "$name" ] && curl -fsS --max-time 5 "https://$name/api/machines" >/dev/null; then ok "Dashboard answers the tailnet at https://$name"
+      else bad "Dashboard doesn't answer HTTPS on the tailnet; check 'journalctl --user -u hangar-dashboard'"; fi
+    elif grep -qE '127\.0\.0\.1:4318|localhost:4318' <<< "$serve_status"; then ok "Tailscale proxies Dashboard"
     else bad "Tailscale proxy missing; run 'tailscale serve --bg 4318'"; fi
     if curl -fsS --max-time 5 http://127.0.0.1:4318/api/machines >/dev/null; then ok "Dashboard API answers"
     else bad "Dashboard API unreachable"; fi
