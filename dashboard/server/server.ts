@@ -9,7 +9,7 @@ import { execFile } from 'node:child_process';
 import { createVpn, VPN_TIMEOUT } from './vpn.ts';
 import type { Exec } from './vpn.ts';
 import { createServer } from 'node:http';
-import type { ServerResponse } from 'node:http';
+import type { RequestListener, ServerResponse } from 'node:http';
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { resolve, extname, sep, join } from 'node:path';
@@ -23,6 +23,7 @@ import { startCollector, collectorPids } from './collector.ts';
 import { createAlerts, loadRules, tempLimits, usageLimits } from './alerts.ts';
 import type { Rules } from './alerts.ts';
 import type { FetchLike } from './push.ts';
+import { startTailnetHttps } from './tailnet-https.ts';
 const root = fileURLToPath(new URL('..', import.meta.url));
 let tailnetName = '', tailnetTried = 0;
 // On the PC, Tailscale runs in Windows, and its CLI answers through WSL interop.
@@ -94,7 +95,7 @@ export function createDashboard(options: { db: string; t3Db?: string; hangar?: s
     const completed = vpn.reconcile(result.machine, result.report.vpns);
     evaluateAlerts(now, completed); emit(result.machine, now); return 204;
   }
-  const server = createServer(async (req, res) => {
+  const listener: RequestListener = async (req, res) => {
     try {
       const path = new URL(req.url!, 'http://localhost').pathname;
       {
@@ -225,7 +226,8 @@ export function createDashboard(options: { db: string; t3Db?: string; hangar?: s
       const types: Record<string, string> = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.woff2': 'font/woff2', '.jpg': 'image/jpeg', '.webp': 'image/webp', '.webmanifest': 'application/manifest+json' };
       res.writeHead(200, { 'Content-Type': types[extname(real)] ?? 'application/octet-stream', 'Cache-Control': file === resolve(dist, 'index.html') ? 'no-cache' : decoded.startsWith('/assets/') ? 'public, max-age=31536000, immutable' : 'no-cache' }).end(readFileSync(real));
     } catch (error) { console.error(error); if (!res.headersSent) res.writeHead(500); res.end(); }
-  });
+  };
+  const server = createServer(listener);
   function observeSuspension(now: number) {
     // Check before evaluating reports or command callbacks too: either can run before the interval after resume.
     if (now - lastObservedAt > 35_000) {
@@ -242,11 +244,13 @@ export function createDashboard(options: { db: string; t3Db?: string; hangar?: s
   const offline = setInterval(tick, 5000);
   const heartbeat = setInterval(() => { for (const stream of streams) stream.write(': heartbeat\n\n'); }, 20_000);
   const stops = options.collect === false ? [] : machines.filter((m: Machine) => m.collector === 'wsl').slice(0, 1).map((m: Machine) => startCollector(m.id, intake));
-  return { server, tick, async idle() { await alerts.idle(); }, async close() { alerts.close(); power.close(); updates.close(); vpn.close(); quit.close(); clearInterval(offline); clearInterval(heartbeat); stops.forEach((stop: () => void) => stop()); for (const stream of streams) stream.end(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); store.close(); } };
+  return { server, listener, tick, async idle() { await alerts.idle(); }, async close() { alerts.close(); power.close(); updates.close(); vpn.close(); quit.close(); clearInterval(offline); clearInterval(heartbeat); stops.forEach((stop: () => void) => stop()); for (const stream of streams) stream.end(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); store.close(); } };
 }
 function statExists(path: string) { try { statSync(path); return true; } catch { return false; } }
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const app = createDashboard({ db: process.env.HANGAR_DASHBOARD_DB ?? resolve(homedir(), '.local/state/hangar/dashboard.db') });
   app.server.listen(Number(process.env.HANGAR_DASHBOARD_PORT ?? 4318), '127.0.0.1');
-  for (const signal of ['SIGTERM', 'SIGINT'] as const) process.once(signal, () => { void app.close(); });
+  // On the PC, the tailnet reaches the Dashboard directly rather than through Windows; see tailnet-https.ts.
+  const https = existsSync(windowsTailscale) ? startTailnetHttps({ tailscale: windowsTailscale, exec: execFile, listener: app.listener }) : null;
+  for (const signal of ['SIGTERM', 'SIGINT'] as const) process.once(signal, () => { void https?.close(); void app.close(); });
 }
