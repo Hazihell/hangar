@@ -26,6 +26,7 @@ hangar doctor    # when something seems off
 hangar update    # Claude Code, Codex, installed skills, T3 Code, gh and tea
 hangar outdated  # which of those have a newer version (the Dashboard shows the same)
 hangar update claude gh   # just those; ids: t3 claude codex gh tea hangar
+hangar rc add ~/Dev/x     # serve a folder through Claude's Remote Control; also: rc remove, rc list
 tests/sync-tests.sh   # after changing bin/hangar: tests it in scratch home folders
 ```
 
@@ -86,5 +87,7 @@ The Dashboard lists Apps and their Processes, keeps Top Apps for each History mi
 The Dashboard checks each Machine for newer versions of T3 Code, Claude Code, Codex, gh, tea and Hangar itself (`hangar outdated`, every 6 hours) and can run any of those Updates (`hangar update <id>`); the Mac is reached over the same SSH as its VPNs and needs a `hangar` that has `outdated`, so run `hangar sync` there after this lands. Skills stay with `hangar update` in a terminal.
 
 The Dashboard sends Alerts as browser push notifications for full disks, sustained high CPU or RAM, a CPU that stays too hot, dropped VPNs, a stopped T3 service and an Offline PC; rules are in `dashboard/alerts.json`, and the VAPID key sits beside the database as `vapid.json`.
+
+The Dashboard also lists the folders the PC serves through Claude's Remote Control, so the Claude app on the phone can start sessions in them, and can add or remove one. `hangar rc list` shows them, `hangar rc add <folder>` and `hangar rc remove <folder>` change them (Linux only; each folder runs as a user service that survives reboots, and `hangar rc` needs `claude remote-control` to have been run once and answered). Removing a folder stops sessions running there.
 
 Run `npm test --prefix dashboard/server` and `dashboard/reporter/parser-tests.sh` to check the server and Mac parsers. The server needs no npm dependencies or build step.

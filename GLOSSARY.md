@@ -35,7 +35,7 @@ A VPN connection a Machine's operating system manages, such as Steeprock: Connec
 _Avoid_: tunnel, network
 
 **Dashboard**:
-The page that shows every Machine: Online or Offline, its current Usage and Temperature, its History, its VPNs (which it can connect and disconnect), its Apps (which it can Quit) and its Updates (which it can run).
+The page that shows every Machine: Online or Offline, its current Usage and Temperature, its History, its VPNs (which it can connect and disconnect), its Apps (which it can Quit), its Updates (which it can run) and, on the PC, its Remote Control Folders (which it can add and remove).
 _Avoid_: monitor, status page
 
 **Process**:
@@ -65,6 +65,10 @@ _Avoid_: power off, force shutdown
 **Update**:
 A newer version of a tool Hangar keeps current on a Machine: T3 Code, Claude Code, Codex, gh, tea, or Hangar itself. The Dashboard shows which are out of date and runs the Update when asked; `hangar update` does the same from a terminal, and also updates skills, which need a diff reviewed first and so stay out of the Dashboard. Updating T3 Code restarts its server and interrupts running agent threads; updating Hangar on the PC restarts the Dashboard.
 _Avoid_: upgrade, patch, outdated item
+
+**Remote Control Folder**:
+A folder on a Machine that Claude's Remote Control serves, so the Claude app on a phone can start sessions there. In a git repository each new session gets its own worktree; any other folder is shared by its sessions. The Dashboard lists them and can add or remove one on the PC; `hangar rc` does the same from a terminal. Removing a folder stops its server, so sessions running there stop responding.
+_Avoid_: project, workspace, remote session
 
 **Alert**:
 A browser push notification about a problem on a Machine: a disk nearly full, CPU or RAM high or the CPU too hot for minutes on end, a VPN dropped, the T3 service stopped, or the PC Offline. When the problem clears, the Alert is quietly replaced by one saying so. Each browser or phone opts in.

@@ -6,6 +6,7 @@ import { Meter } from "@/components/ui/meter"
 import { Separator } from "@/components/ui/separator"
 import { PowerLine, PowerMenu, usePower } from "@/components/power-control"
 import { PenMark } from "@/components/status"
+import { RemoteControlSection } from "@/components/remote-control-section"
 import { Trace } from "@/components/trace"
 import { UpdatesSection } from "@/components/updates-section"
 import { VpnList } from "@/components/vpn-list"
@@ -215,6 +216,8 @@ export function MachineSheet({
           )}
 
           <UpdatesSection machine={machine} now={now} muted={!online} locked={locked} onSent={onUpdateSent} />
+
+          <RemoteControlSection machine={machine} muted={!online} locked={locked} />
 
           <AppsSection machine={machine} muted={!online} locked={locked} />
         </div>

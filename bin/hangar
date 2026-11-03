@@ -255,6 +255,156 @@ setup_wake() {
   else warn "couldn't change Windows' unattended sleep timeout; the PC sleeps again two minutes after a remote wake"; fi
 }
 
+# ── Remote Control ────────────────────────────────────────────────────────────
+# Each Remote Control Folder runs `claude remote-control` as one instance of a systemd
+# user template, named after the folder's path. Enabling the instance is what adds the
+# folder, so systemd's list of enabled units is the only record of which are served.
+RC_UNIT="$HOME/.config/systemd/user/hangar-rc@.service"
+RC_WANTS="$HOME/.config/systemd/user/default.target.wants"
+RC_ROOTS="${HANGAR_RC_ROOTS:-$HOME/Dev}"   # where 'rc list' looks for repositories to offer
+CLAUDE_JSON="$HOME/.claude.json"
+
+rc_need() {
+  if [ "$OS" = Linux ] && command -v systemd-escape >/dev/null; then return 0; fi
+  say "'rc' runs Claude's Remote Control as a Linux user service. On the Mac, add folders in the desktop app's Remote Control settings."
+  exit 1
+}
+rc_unit_name() { printf 'hangar-rc@%s.service' "$(systemd-escape --path "$1")"; }
+rc_mode() { # worktree gives each session its own git worktree; a folder that isn't a repository is shared
+  if git -C "$1" rev-parse --is-inside-work-tree >/dev/null 2>&1; then echo worktree; else echo same-dir; fi
+}
+rc_folders() { # the folders being served, one absolute path per line
+  local f inst
+  for f in "$RC_WANTS"/hangar-rc@*.service; do
+    [ -e "$f" ] || [ -L "$f" ] || continue
+    inst="${f##*/hangar-rc@}"
+    systemd-escape --unescape --path "${inst%.service}"
+  done | sort
+}
+rc_state() { # running, starting, failing (exits and is retried) or stopped
+  local s
+  s="$(systemctl --user show -p ActiveState -p SubState --value "$(rc_unit_name "$1")" 2>/dev/null | tr '\n' ' ')"
+  case "$s" in
+    "active running "*) echo running ;;
+    "activating auto-restart "*|failed*) echo failing ;;
+    activating*|"active "*) echo starting ;;
+    *) echo stopped ;;
+  esac
+}
+rc_candidates() { # git repositories under RC_ROOTS, at most three folders down, to offer for 'rc add'
+  local root
+  for root in $RC_ROOTS; do
+    [ -d "$root" ] || continue
+    # .claude holds the worktrees Remote Control makes, which aren't projects of their own
+    find "$root" -maxdepth 4 \( -name node_modules -o -name .claude \) -prune -o -type d -name .git -print -prune 2>/dev/null
+  done | sed 's#/\.git$##' | sort -u
+}
+rc_trust() { # mark the folder trusted in Claude's own config, as answering its trust question does
+  local tmp
+  [ -f "$CLAUDE_JSON" ] || { printf 'no %s; run claude once and sign in\n' "$CLAUDE_JSON" >&2; return 1; }
+  jq -e --arg p "$1" '.projects[$p].hasTrustDialogAccepted == true' "$CLAUDE_JSON" >/dev/null 2>&1 && return 0
+  tmp="$(mktemp "$CLAUDE_JSON.XXXXXX")" || return 1
+  if jq --arg p "$1" '.projects[$p] = ((.projects[$p] // {}) + {hasTrustDialogAccepted: true})' "$CLAUDE_JSON" > "$tmp"; then
+    chmod 600 "$tmp" && mv "$tmp" "$CLAUDE_JSON"
+  else rm -f "$tmp"; return 1; fi
+}
+
+write_rc_unit() {
+  local tmp
+  mkdir -p "$(dirname "$RC_UNIT")"
+  tmp="$(mktemp)"
+  cat > "$tmp" <<EOF
+[Unit]
+Description=Claude Remote Control in %f
+After=network.target
+# Keep retrying however often it fails, so a slow network at boot can't stop it for good
+StartLimitIntervalSec=0
+
+[Service]
+WorkingDirectory=%f
+# A login shell, so the sessions it starts see the same PATH as a terminal
+ExecStart=/bin/bash -l "$REPO/bin/hangar" _rc-serve %f
+Restart=always
+RestartSec=10
+# It redraws its status screen every second; errors still reach the journal
+StandardOutput=null
+
+[Install]
+WantedBy=default.target
+EOF
+  if ! cmp -s "$tmp" "$RC_UNIT"; then
+    mv "$tmp" "$RC_UNIT"
+    systemctl --user daemon-reload || return 1
+  else rm -f "$tmp"; fi
+}
+
+rc_serve() { # internal: what each hangar-rc@ instance runs
+  local dir="$1" claude
+  cd "$dir" || exit 1
+  rc_trust "$dir" || true   # Claude's config may have been reset since 'rc add'
+  claude="$(command -v claude || echo "$HOME/.local/bin/claude")"
+  exec "$claude" remote-control --spawn "$(rc_mode "$dir")"
+}
+
+rc_add() {
+  [ $# = 1 ] || { say "usage: hangar rc add <folder>"; exit 1; }
+  local dir unit
+  dir="$(cd "$1" 2>/dev/null && pwd -P)" || { bad "$1 isn't a folder"; exit 1; }
+  case "$dir" in "$HOME"/*) ;; *) bad "$dir isn't inside $HOME; only folders there can be served"; exit 1 ;; esac
+  command -v jq >/dev/null || { bad "needs jq; run 'hangar install'"; exit 1; }
+  # Remote Control's one-time question is answered once per Machine, by a person
+  if [ "$(jq -r '.remoteDialogSeen // false' "$CLAUDE_JSON" 2>/dev/null)" != true ]; then
+    bad "Remote Control isn't turned on here yet: run 'claude remote-control' once in any folder, answer y, then press Ctrl+C"; exit 1
+  fi
+  write_rc_unit || { bad "couldn't write $RC_UNIT"; exit 1; }
+  rc_trust "$dir" || { bad "couldn't mark $dir trusted in $CLAUDE_JSON"; exit 1; }
+  unit="$(rc_unit_name "$dir")"
+  if systemctl --user enable --now "$unit" >/dev/null 2>&1; then ok "$dir served; new sessions: $(rc_mode "$dir")"
+  else bad "$dir didn't start; check 'systemctl --user status $unit'"; exit 1; fi
+}
+
+rc_remove() {
+  [ $# = 1 ] || { say "usage: hangar rc remove <folder>"; exit 1; }
+  local dir="${1%/}"
+  # A folder that was deleted can still be removed by the path it was added with
+  case "$dir" in /*) ;; *) dir="$(cd "$dir" 2>/dev/null && pwd -P)" || dir="$PWD/${1%/}" ;; esac
+  [ -d "$dir" ] && dir="$(cd "$dir" && pwd -P)"
+  rc_folders | grep -qxF -- "$dir" || { bad "$dir isn't served"; exit 1; }
+  if systemctl --user disable --now "$(rc_unit_name "$dir")" >/dev/null 2>&1; then ok "$dir no longer served"
+  else bad "couldn't stop $(rc_unit_name "$dir")"; exit 1; fi
+}
+
+rc_list() {
+  local dir first=1
+  if [ "${1:-}" != --json ]; then
+    if [ -z "$(rc_folders)" ]; then say "No folders served. Add one with 'hangar rc add <folder>'."; return 0; fi
+    while IFS= read -r dir; do printf '  %-8s  %-8s  %s\n' "$(rc_state "$dir")" "$(rc_mode "$dir")" "$dir"; done < <(rc_folders)
+    return 0
+  fi
+  printf '{"folders":['
+  while IFS= read -r dir; do
+    [ "$first" = 1 ] || printf ','; first=0
+    printf '{"path":%s,"mode":"%s","state":"%s"}' "$(json_str "$dir")" "$(rc_mode "$dir")" "$(rc_state "$dir")"
+  done < <(rc_folders)
+  printf '],"candidates":['
+  first=1
+  while IFS= read -r dir; do
+    [ -n "$dir" ] || continue
+    [ "$first" = 1 ] || printf ','; first=0
+    json_str "$dir"
+  done < <(rc_candidates | grep -vxF -f <(rc_folders))
+  printf ']}\n'
+}
+
+cmd_rc() {
+  rc_need
+  local sub="${1:-list}"; [ $# = 0 ] || shift
+  case "$sub" in
+    list) rc_list "$@" ;; add) rc_add "$@" ;; remove) rc_remove "$@" ;;
+    *) say "usage: hangar rc [list [--json] | add <folder> | remove <folder>]"; exit 1 ;;
+  esac
+}
+
 # ── setup ─────────────────────────────────────────────────────────────────────
 cmd_setup() {
   say "Linking config into place"
@@ -296,6 +446,7 @@ cmd_setup() {
   done
   if [ "$OS" = Darwin ]; then setup_temps; setup_reporter; fi
   if is_wsl; then setup_hwinfo; setup_startup; setup_wake; fi
+  if [ "$OS" = Linux ] && [ -f "$RC_UNIT" ]; then write_rc_unit || warn "couldn't refresh $RC_UNIT"; fi
   if [ "$FAILED" = 1 ]; then say "${R}Setup finished with errors.${N}"; exit 1; fi
   say "Done. Run 'hangar doctor' to check the whole machine."
 }
@@ -491,6 +642,18 @@ cmd_doctor() {
     local dashboard_url="${HANGAR_DASHBOARD_URL:-https://stormtrooper.taila332e5.ts.net/api/report}"
     if curl -fsS --max-time 5 "${dashboard_url%/api/report}/api/machines" >/dev/null; then ok "Dashboard reachable"
     else bad "Dashboard unreachable"; fi
+  fi
+
+  if [ "$OS" = Linux ] && command -v systemd-escape >/dev/null; then
+    say "Remote Control"
+    local rc_dir rc_any=0
+    while IFS= read -r rc_dir; do
+      [ -n "$rc_dir" ] || continue; rc_any=1
+      if [ ! -d "$rc_dir" ]; then bad "$rc_dir no longer exists; run 'hangar rc remove $rc_dir'"
+      elif [ "$(rc_state "$rc_dir")" = running ]; then ok "$rc_dir"
+      else bad "$rc_dir isn't running; see 'journalctl --user -u $(rc_unit_name "$rc_dir")'"; fi
+    done < <(rc_folders)
+    [ "$rc_any" = 1 ] || ok "no folders served ${D}add one with 'hangar rc add <folder>'${N}"
   fi
 
   if is_wsl; then
@@ -903,6 +1066,8 @@ hangar: keep this machine's agent setup in step with $REPO
             'update <id>...' updates just those: t3 claude codex gh tea hangar
   outdated  list tools with a newer version; '--json' is what the Dashboard reads
   install   Linux only: install tools, T3 Code and Dashboard; serve through Tailscale
+  rc        Linux only: folders Claude's Remote Control serves, so the Claude app can start sessions in them
+            'rc add <folder>', 'rc remove <folder>', 'rc list [--json]'; each runs as a service that survives reboots
 EOF
 }
 
@@ -910,5 +1075,7 @@ case "${1:-help}" in
   setup) cmd_setup ;; sync) cmd_sync ;; doctor) cmd_doctor ;;
   update) shift; cmd_update "$@" ;; outdated) shift; cmd_outdated "$@" ;;
   _refresh) refresh_hangar ;;   # internal: the second half of 'update hangar', run by the new code
+  rc) shift; cmd_rc "$@" ;;
+  _rc-serve) shift; rc_serve "$@" ;;   # internal: what each hangar-rc@ service runs
   install) cmd_install ;; *) cmd_help ;;
 esac

@@ -108,6 +108,28 @@ export type Updates = {
   error: { message: string; at: string } | null
 }
 
+/** A folder on a Machine that Claude's Remote Control serves (API.md `## Remote Control`). */
+export type RemoteControlFolder = {
+  /** Absolute. */
+  path: string
+  /** `worktree`: each new session gets its own git worktree. `same-dir`: sessions share the folder. */
+  mode: "worktree" | "same-dir"
+  /** `failing`: its server keeps exiting and being restarted. */
+  state: "running" | "starting" | "failing" | "stopped"
+}
+
+export type RemoteControl = {
+  folders: RemoteControlFolder[]
+  /** Absolute paths of git repositories that could be added. */
+  candidates: string[]
+  /** When `hangar rc list` last answered (server clock, ms); null until it has. */
+  checkedAt: number | null
+  /** An add or remove under way, until it ends or 60 s pass. */
+  pending: { action: "add" | "remove"; path: string } | null
+  /** The last add or remove failed; stays until the next one. */
+  error: string | null
+}
+
 export type T3Thread = { title: string; status: string }
 
 export type MachineIdentity = { id: string; name: string; os: string }
@@ -141,6 +163,8 @@ export type Machine = MachineIdentity & {
   power?: Power
   /** On every Machine from a server that checks Updates. */
   updates?: Updates
+  /** Only on the Machine the server runs on (the PC): the folders Claude's Remote Control serves. */
+  remoteControl?: RemoteControl
   history: HistoryPoint[]
 }
 

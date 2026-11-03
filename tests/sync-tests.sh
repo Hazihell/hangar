@@ -227,5 +227,37 @@ if grep -qi microsoft /proc/version 2>/dev/null; then
   export HANGAR_C_DRIVE=$T/no-c-drive
 fi
 
+# 13 `hangar rc`: Remote Control folders as systemd user services, through a stub systemctl (Linux with systemd only)
+if [ "$(uname -s)" = Linux ] && command -v systemd-escape >/dev/null && command -v jq >/dev/null; then
+  # enable/disable keep the wants links as systemd would, which is what 'rc list' reads
+  stub systemctl 'echo "systemctl $*" >> '$CALLS'; W=$HOME/.config/systemd/user/default.target.wants
+case "$2" in enable) mkdir -p $W; ln -sf ../hangar-rc@.service "$W/$4" ;; disable) rm -f "$W/$4" ;; show) printf "active\nrunning\n" ;; is-active) exit 3 ;; esac'
+  RC=$C/Dev; mkdir -p $RC/app/.claude/worktrees/w1 $RC/app/node_modules/dep $RC/notes $RC/lib $T/outside
+  for r in app app/.claude/worktrees/w1 app/node_modules/dep lib; do git -C $RC/$r init -q; done
+  printf '{"numStartups":3,"projects":{"/elsewhere":{"hasTrustDialogAccepted":false}}}\n' > $C/.claude.json; : > $CALLS
+  hg rc add $RC/app </dev/null >$T/out 2>&1; rc=$?
+  [ $rc = 1 ] && grep -q "Remote Control isn't turned on here yet" $T/out && [ ! -s $CALLS ] && pass "13a without the one-time yes, add stops and says how" || { fail 13a; cat $T/out $CALLS; }
+  jq '.remoteDialogSeen = true' $C/.claude.json > $T/cj && cat $T/cj > $C/.claude.json
+  hg rc add $RC/app </dev/null >$T/out 2>&1; rc=$?
+  U=$C/.config/systemd/user/hangar-rc@.service
+  [ $rc = 0 ] && grep -q 'new sessions: worktree' $T/out && grep -qF "ExecStart=/bin/bash -l \"$C/.agents/bin/hangar\" _rc-serve %f" $U && grep -q 'WorkingDirectory=%f' $U \
+    && grep -qF "systemctl --user enable --now hangar-rc@$(systemd-escape --path $RC/app).service" $CALLS \
+    && [ "$(jq -r --arg p $RC/app '.projects[$p].hasTrustDialogAccepted' $C/.claude.json)" = true ] && pass "13b add writes the unit, trusts the folder and enables its service" || { fail 13b; cat $T/out $CALLS; }
+  [ "$(jq -r '.numStartups' $C/.claude.json)" = 3 ] && [ "$(jq -r '.projects["/elsewhere"].hasTrustDialogAccepted' $C/.claude.json)" = false ] && [ "$(stat -c %a $C/.claude.json)" = 600 ] && pass "13c trusting keeps the rest of Claude's config, private" || { fail 13c; cat $C/.claude.json; }
+  hg rc add $RC/notes </dev/null >$T/out 2>&1
+  grep -q 'new sessions: same-dir' $T/out && pass "13d a folder that isn't a repository shares the folder" || { fail 13d; cat $T/out; }
+  out="$(hg rc list --json </dev/null)"
+  [ "$(jq -c . <<< "$out")" = "{\"folders\":[{\"path\":\"$RC/app\",\"mode\":\"worktree\",\"state\":\"running\"},{\"path\":\"$RC/notes\",\"mode\":\"same-dir\",\"state\":\"running\"}],\"candidates\":[\"$RC/lib\"]}" ] && pass "13e list --json: served folders, and repositories not yet served, without worktrees or dependencies" || { fail 13e; echo "$out"; }
+  : > $CALLS; hg rc remove $RC/app/ </dev/null >$T/out 2>&1; rc=$?
+  [ $rc = 0 ] && grep -qF "systemctl --user disable --now hangar-rc@$(systemd-escape --path $RC/app).service" $CALLS && [ "$(hg rc list --json </dev/null | jq -c '[.folders[].path, .candidates]')" = "[\"$RC/notes\",[\"$RC/app\",\"$RC/lib\"]]" ] && pass "13f remove disables the service and offers the folder again" || { fail 13f; cat $T/out $CALLS; }
+  hg rc remove $RC/app </dev/null >$T/out 2>&1; rc=$?
+  [ $rc = 1 ] && grep -q "isn't served" $T/out && pass "13g removing a folder that isn't served fails" || { fail 13g; cat $T/out; }
+  : > $CALLS; hg rc add $T/outside </dev/null >$T/out 2>&1; r1=$?; hg rc add $C </dev/null >>$T/out 2>&1; r2=$?
+  [ $r1 = 1 ] && [ $r2 = 1 ] && [ ! -s $CALLS ] && [ "$(grep -c "only folders there can be served" $T/out)" = 2 ] && pass "13h folders outside the home folder, or the home folder itself, are refused" || { fail 13h; cat $T/out; }
+  hg rc add $RC/missing </dev/null >$T/out 2>&1; rc=$?
+  [ $rc = 1 ] && grep -q "isn't a folder" $T/out && pass "13i a folder that doesn't exist is refused" || { fail 13i; cat $T/out; }
+  rm -f $ST/systemctl
+fi
+
 rm -rf $T
 if [ $FAILS = 0 ]; then echo "ALL PASS"; else echo "SOME FAILED"; exit 1; fi

@@ -140,6 +140,7 @@ Responses: `204` accepted; `400` malformed; `404` Machine not in the list.
 - `apps`: `null` until the Machine has sent Processes. `list` holds the union of the 10 Apps using the most CPU and the 10 using the most RAM, so the page can sort by either. Each App sums its Processes; `processes` lists them (up to 20, most CPU first). `quit` says whether the Dashboard may Quit it (see Quit below): for an App, whether any of its Processes may be. On the PC, one App is named `WSL`: its `ram` is the `vmmemWSL` Process's and its `cpu` the larger of that Process's and the sum of the Processes inside WSL (Windows doesn't let a user read `vmmemWSL`'s CPU time), its `quit` is always `false`, and instead of `processes` it carries `apps`, the Apps inside WSL built the same way. Kept in memory only.
 - `power`: present only on a Machine the Dashboard can put to Sleep or Shut down (today the PC, `collector: "wsl"`). `{ "actions": ["sleep", "shutdown"], "pending": { "action": "sleep" | "shutdown", "since": "<iso>" } | null, "error": { "message": "...", "at": "<iso>" } | null }`. See `POST /api/machines/:id/power`.
 - `updates`: present on every Machine. `{ "checkedAt": "<iso>" | null, "checking": bool, "items": [Update], "pending": { "items": ["<id>"], "since": "<iso>" } | null, "error": { "message": "...", "at": "<iso>" } | null }`. See Updates below.
+- `remoteControl`: present only on the Machine the server runs on (the PC, `collector: "wsl"`). `{ "folders": [RemoteControlFolder], "candidates": ["<path>"], "checkedAt": <ms> | null, "pending": { "action": "add" | "remove", "path": "<path>" } | null, "error": "..." | null }`. See Remote Control below.
 - `history`: oldest first, at most 1440 points. `t` is the start of the minute. `cpu`, `ram` and `disk` are percents; `disk` is the fullest disk's percent. `temp` is the CPU Temperature in °C, or `null` for a minute whose reports had none.
 
 ## `POST /api/machines/:id/vpns/:name`
@@ -235,6 +236,40 @@ Starts a check now. Requires a JSON `Content-Type` (the body is ignored). `202`,
 ### `GET /api/machines/:id/t3-threads`
 
 The T3 threads with a run that hasn't finished (running, queued, or waiting for an answer), so the page can say what a T3 update would interrupt: `{ "threads": [{ "title": "...", "status": "running" }] }`. Read-only from T3's own database (`~/.t3/userdata/statev2.sqlite`). `404` for a Machine that isn't the PC or whose last check didn't list `t3`; `{ "threads": null }` if the database can't be read (for example, T3 changed it), and the page then warns in general terms.
+
+## Remote Control
+
+Claude Code's Remote Control lets the Claude app on a phone start sessions on a Machine. Each folder it serves runs as a systemd user service, so it survives reboots. The Dashboard shows which folders the PC serves and can add or remove one. The Mac is set up in the Claude desktop app, not from here.
+
+The work is done by `bin/hangar` on the PC itself, so a terminal and the Dashboard do the same thing:
+
+- `hangar rc list --json` prints `{ "folders": [RemoteControlFolder], "candidates": ["<path>"] }` and changes nothing.
+- `hangar rc add <path>` and `hangar rc remove <path>` exit 0 on success. On failure they exit 1 with a line on stdout that starts with `fail`, saying why.
+
+The server runs `hangar` by the path of the repo's `bin/hangar`, never through a shell. A `RemoteControlFolder`:
+
+```json
+{ "path": "/home/roger/Dev/99x/ola-ui", "mode": "worktree", "state": "running" }
+```
+
+- `path`: absolute.
+- `mode`: `worktree` gives each new session its own git worktree; `same-dir` is a folder that isn't a git repository, where sessions share it.
+- `state`: `running`, `starting`, `failing` (its server keeps exiting and being restarted) or `stopped`.
+- `candidates`: absolute paths of git repositories under `~/Dev` that aren't served yet, the ones `add` is offered for.
+
+The list runs 5 s after the server starts, then every 30 s while the Machine is Online (an Offline one is skipped), and right after every add or remove ends. A list that fails or answers with something other than the document above keeps the previous result and `checkedAt`, and sets no `error`; the server drops any entry that doesn't fit the shape (a path must be absolute, without control characters). `checkedAt` is when a list last answered, in server-clock milliseconds, `null` until one has. A `machine` event is sent when the folders or candidates change. Results live in memory.
+
+### `POST /api/machines/:id/rc`
+
+```json
+{ "action": "add", "path": "/home/roger/Dev/evidence" }
+```
+
+`action` is `add` or `remove`. Runs `hangar rc add|remove <path>` on the PC. The `path` must be one the latest list offered: a `candidates` entry for `add`, a `folders` entry for `remove`, compared exactly. This is what keeps the page from making the server serve an arbitrary folder. Requires a JSON `Content-Type`. Responses: `202` with the new `remoteControl`; `400` a body that isn't that, an unknown `action`, or a path not in the latest list; `404` no such Machine, or one without Remote Control; `409` the Machine is Offline, or an add or remove is already pending or still running.
+
+`pending` is set while it runs; when it ends, the server lists again. A non-zero exit, or 60 seconds passing, clears `pending` and sets `error` (the last non-empty line of the command's output without its `fail` mark, shortened to 160 characters with control characters removed; "Timed out after 60 seconds" for the limit). After the limit the server stops the command and everything it started (SIGTERM to its process group, SIGKILL 10 s later), and until that process has actually exited a new request answers `409` even though `pending` is already `null`. Success clears `error`, as does starting the next add or remove; an `error` otherwise stays. Each change sends a `machine` event.
+
+Removing a folder stops its server, so sessions running there stop responding. Claude can bring them back for about four hours if the folder is added again.
 
 ## `GET /api/machines/:id/minutes/:t`
 
