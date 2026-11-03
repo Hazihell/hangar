@@ -1,5 +1,6 @@
 import { createServer } from 'node:https';
 import type { RequestListener } from 'node:http';
+import type { Socket } from 'node:net';
 import type { Exec } from './vpn.ts';
 // On the PC, Windows' `tailscale serve` can't proxy to Ubuntu once mirrored networking breaks connections from Windows into Ubuntu (after sleep, or a VPN going down),
 // yet the tailnet still reaches Ubuntu directly. So there the Dashboard answers HTTPS on the tailnet itself, with the certificate Tailscale issues for the PC's name.
@@ -19,7 +20,7 @@ export function startTailnetHttps(options: { tailscale: string; exec: Exec; list
   const { tailscale, exec } = options, accept = options.accept ?? tailnetAddress, log = options.log ?? console.error;
   const server = createServer(options.listener);
   // Listening on every address is simplest across Tailscale restarts; anything that didn't arrive over the tailnet is dropped.
-  server.on('connection', socket => { if (!accept(socket.localAddress)) socket.destroy(); });
+  server.on('connection', (socket: Socket) => { if (!accept(socket.localAddress)) socket.destroy(); });
   let timer: NodeJS.Timeout | undefined, closed = false, listening = false, pem = '';
   server.on('error', (error: NodeJS.ErrnoException) => {
     listening = false;
