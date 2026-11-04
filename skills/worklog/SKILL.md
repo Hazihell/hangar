@@ -1,111 +1,78 @@
 ---
 name: worklog
-description: Generate a professional daily worklog from git commits for a specific date, usually for status reporting to a manager or team lead. Use when asked to create a worklog, daily report, status summary, or commit-based progress update for today, yesterday, or a specific date.
+description: Write the day's worklog from git history and, once Roger confirms the preview, post it with its hours to his Sherlock project.
 disable-model-invocation: true
 ---
 
 # Worklog
 
-Generate a concise, technical daily worklog from git history for the current repository.
+A manager-ready account of one day's work, written from git history and posted as a log on a Sherlock project and as a Tempo worklog. Every post carries Roger's name and notifies the project's people, so nothing is posted until he confirms the exact preview.
 
-## Workflow
+## Steps
 
-1. Resolve the target date from the user request.
-Default to today when no date is provided.
-Accept relative dates such as `today` and `yesterday` or an explicit date such as `2026-03-12`.
+1. **Resolve the date.** Default to today; accept `today`, `yesterday` or an explicit date. Relative dates come from the shell's local calendar (`date +%F`), never from a UTC timestamp in the chat. The day runs from `00:00:00` to `23:59:59` local. Done when you hold one `YYYY-MM-DD`.
 
-2. Read the configured git author name:
-```bash
-git config user.name
-```
+2. **Collect the commits.** Run:
+   ```bash
+   git fetch --all --quiet
+   git log --all --author="$(git config user.name)" --since="<DATE> 00:00:00" --until="<DATE> 23:59:59" --pretty=format:"=== %h %s%n%b" --reverse
+   ```
+   With no commits, stop and report `❌ No commits found for '<DATE>' by <USER>.`
 
-3. Refresh remote refs before reading history:
-```bash
-git fetch --all --quiet
-```
+3. **Sort out the work.** The worklog covers product work: features, fixes, refactors, tests, research and docs. These stay out:
+   - Release chores: `chore(release)` version bumps and branch version suffixes.
+   - Merges between branches (`Merge remote-tracking branch …`).
 
-4. Collect commits across all branches for that author and date:
-```bash
-git log --all --author="$(git config user.name)" --since="<DATE> 00:00:00" --until="<DATE> 23:59:59" --pretty=format:"%s%n%b" --reverse
-```
+   A commit repeated on several branches (the same subject, or the same change rebased or squashed into a PR) is one piece of work. A squash-merged PR (`… (#1874)`, `fix/<BUG_ID>: … (#1875)`) gives its number or bug id to the commits behind it. Done when every commit is either inside a topic or one of the exclusions above.
 
-5. Stop if no commits are returned and report:
-```text
-❌ No commits found for '<DATE>' by <USER>.
-```
+4. **Write the worklog** to the format below. Done when every topic is backed by commits and no bullet claims work the history does not show.
 
-6. Group the commit content by topic or component, then write a manager-ready worklog.
+5. **Set the hours.** Use the hours Roger gave, or 8 when he gives none.
 
-7. Detect merged reviewed PRs separately from direct implementation work.
-Treat commits whose subject or body indicates a merged bugfix PR, especially patterns like `fix/<BUG_ID>`, `bugfix/<BUG_ID>`, or PR descriptions that reference a Sherlock bug and reviewed/merged PR flow, as coordination work rather than same-day implementation.
-When these appear, summarize them in a dedicated section such as `### Merged Reviewed PRs And Updated Their Tasks`.
-List each bug as its own bullet in the format:
+6. **Preview.** Send Roger the exact text that will be posted, in a fenced block, with the project and hours beneath it. Then stop and wait for his reply. Fold in any edits he asks for and send the preview again. The step is done only when he approves the version you are holding.
+
+7. **Post** to "OLA – New UI Live Bug Tracking - 2026" (`170625694`) unless Roger names another project. Write the approved text to a file under `/tmp/worklog/` and send it on stdin; the CLI turns line breaks into `<br>`:
+   ```bash
+   sherlock comment 170625694 - --hours <n> < /tmp/worklog/<DATE>.md
+   ```
+   Then read it back with `sherlock show <logId>`. Done when `comment` starts with the date line and `spent` equals the hours.
+
+   To correct a posted log, edit it in place rather than posting again: `sherlock set <logId> comment=@<file> spent=<n>`, done when the reply has `saved: true` and an empty `mismatched`.
+
+8. **Post to Tempo.** The approval in step 6 covers this too. Run `~/.claude/skills/tempo/tempo.sh list <DATE>` first: when a worklog already exists for that date, say so and stop (offer `edit` only if Roger asks). Otherwise run `~/.claude/skills/tempo/tempo.sh log <DATE> --hours <n> < /tmp/worklog/<DATE>.md` and confirm the printed id, date and hours. Done when `list <DATE>` shows exactly one worklog with the right hours. See the `tempo` skill for setup and errors.
+
+Sherlock dates a log in UTC at the moment of posting, so a log posted late in the local evening shows the next day's date. The date line in the text is the date the log covers.
+
+## Format
+
+The first line is `Worklog for <M/D/YY>` from the resolved date (`Worklog for 10/23/26`), followed by a blank line, then one level-3 header per topic, with plain bullets beneath:
+
 ```markdown
+Worklog for 10/23/26
+
+### Digital Profile Chart Drill-Down (#1874)
+- Chart segment dialog: Clicking a Sentiment or Media slice opens a dialog listing the posts behind it, paged 20 at a time with its total.
+
+### Bug Fixes
+- `170601159` Embedded Intelligence fails to connect in Chrome: EI cookie selection now matches the backend's last-cookie precedence.
+```
+
+- Group by topic or component: a feature's PR, a page, a flow. Bug fixes Roger wrote himself gather under `### Bug Fixes`, one bullet each, led by the bug id.
+- Each bullet names a specific task, then the concrete logic, component, flow or integration behind it, summarised rather than copied from the commit.
+- Professional engineering tone, plain bullets with no bold.
+- Punctuate with commas, colons, semicolons and parentheses. The em dash (—) never appears.
+
+### Merged reviewed PRs
+
+A `fix/<BUG_ID>` PR whose fix Roger did not commit himself that day is coordination: he merged an already reviewed PR and updated its task. All such PRs gather under one section, a bullet each:
+
+```markdown
+### Merged Reviewed PRs And Updated Their Tasks
 - `<BUG_ID>` Short bug summary.
 ```
-Do not describe these entries as if the user implemented the fix that day unless other non-merge commits clearly show direct code changes by the user for that bug on that date.
 
-8. When the user asks to include PR reviews they did, add each reviewed PR as its own topic.
-Gather the review comments the user authored on that date (from the user, or via the Gitea API).
-Give each reviewed PR its own level-3 header in the format `### PR Review - <PR title> #<number>`.
-Under each header, list every distinct review comment as a plain bullet, rephrased as a concise technical summary of the issue raised and the suggested fix.
-Preserve concrete identifiers from the review (function names, props, query keys, `data-id` values) so the point stays actionable.
-Do not merge multiple reviewed PRs into a single shared section; one header per PR, even across different repositories.
-Do not describe review comments as if the user implemented the change; they are review feedback, not same-day code by the user.
+When Roger's own commits that day carry the fix, it belongs under `### Bug Fixes` instead.
 
-## Output Rules
+### PR reviews
 
-- Use a professional software-engineering tone.
-- NEVER use the Em Dash (—) character anywhere in the output.
-- Be specific and technical. Mention concrete logic, components, flows, integrations, or fixes rather than generic progress language.
-- Infer likely topic groupings from commit subjects and bodies.
-- Avoid repeating raw commit messages verbatim when a clearer technical summary is possible.
-- Do not invent work that is not supported by the commit history.
-- Distinguish direct code changes from merge/review coordination. If a commit represents merging an already reviewed PR and updating the corresponding task, say that explicitly and keep the wording brief.
-- Use Markdown level-3 headers for each topic.
-- Use plain list items under each topic with no bold formatting.
-- When multiple merged reviewed bugfix PRs are present, group them under a single section titled `### Merged Reviewed PRs And Updated Their Tasks` instead of repeating the same phrasing in each bullet.
-- Treat PR reviews the user performed as distinct topics, one level-3 header per PR in the format `### PR Review - <PR title> #<number>`, with one bullet per review comment. This is separate from the merged reviewed bugfix PR section above, which is about coordination on the user's own bugfix PRs.
-
-Use this exact shape:
-
-```markdown
-### Topic or Component
-- Specific task: Technical description of the change
-```
-
-## Date Handling
-
-- Interpret the date in the user's local context when possible.
-- Resolve `today` and `yesterday` from the shell's local calendar date at execution time, not from any UTC timestamp embedded in the chat metadata.
-- If the user provides an explicit date, use that date as written unless the user explicitly requests UTC handling.
-- When an ISO timestamp or other timezone-bearing value appears in the prompt, convert it to the local timezone before deciding the worklog date.
-- Use the resolved calendar date explicitly in the response when the request used a relative date and ambiguity is possible.
-- Treat the range as the full local day from `00:00:00` to `23:59:59`.
-- When collecting commits, always build the `--since` and `--until` window from the resolved local date, and show the resolved date window if there is any ambiguity.
-
-## Example
-
-For commits such as `feat: add login flow` and `fix: token expiry redirect loop`, produce output like:
-
-```markdown
-### Authentication
-- Implemented the login flow, including the client-side entry point and supporting authentication state handling.
-- Corrected token expiry behavior to prevent redirect loops when the session is no longer valid.
-```
-
-For PR reviews the user performed, produce output like:
-
-```markdown
-### PR Review - feat(phone-input): add PhoneInput, PhoneDisplay, and formatDisplayPhoneNumber #126
-- Flagged that `formatDisplayPhoneNumber` can emit malformed output for incomplete input, recommending an `isValid()` check before formatting with a fallback to the trimmed original.
-- Noted that the wrapper exposes upstream flag-customization props that have no effect since the flag component is hardcoded, and suggested omitting them from the public type.
-
-### PR Review - feat(admin): add queue management page with kanban board #252
-- Called out an interactive shared-library `Button` rendered per card without a `data-id`, proposing a stable `queue-management-queue-${queueId}-progress-button` id.
-- Flagged that routine refetches trigger the blocking overlay, recommending only pending mutations block interaction while refetches stay non-blocking.
-```
-
-## Final Step
-
-Output only the worklog. Do not add any surrounding commentary, offers, or suggestions before or after the worklog content.
+When Roger asks to include the PR reviews he did, read [`pr-reviews.md`](pr-reviews.md).
