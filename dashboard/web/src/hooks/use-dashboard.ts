@@ -39,8 +39,15 @@ const FETCH_MS = 10_000
  */
 const CLOSE_WATCH_MS = 4_000
 const CLOSE_FETCH_MS = 3_500
+/**
+ * How long a hidden page keeps watching closely: the server's limit for a Sleep
+ * or Shut down to happen (POWER_TIMEOUT), long enough to see the Dashboard go.
+ */
+const HIDDEN_WATCH_MS = 120_000
 
 const RELOADED_FOR = "hangar:reloaded-for-build"
+
+const pageHidden = () => document.visibilityState === "hidden"
 
 /** Reloads the page for a new build, unless this tab already did for that build. */
 function reloadFor(build: string): boolean {
@@ -63,6 +70,7 @@ export function useDashboard() {
     build: null,
   })
   const reconnectRef = useRef<() => void>(() => {})
+  const syncRef = useRef<() => void>(() => {})
   const closely = useRef(false)
 
   useEffect(() => {
@@ -79,6 +87,13 @@ export function useDashboard() {
     // The build of the first snapshot: the one this page's code belongs to.
     let build: string | null = null
     const inflight = new Set<AbortController>()
+
+    // Out of view: no stream, no requests. A page watching closely keeps its
+    // stream for HIDDEN_WATCH_MS after it's hidden, so it still sees the
+    // Dashboard go with a Sleep or Shut down sent just before.
+    let holdOver = pageHidden()
+    let holdTimer: ReturnType<typeof setTimeout> | undefined
+    const paused = () => pageHidden() && (holdOver || !closely.current)
 
     const update = (fn: (s: DashboardState) => DashboardState) => {
       if (!disposed) setState(fn)
@@ -135,7 +150,7 @@ export function useDashboard() {
     }
 
     function connect() {
-      if (disposed) return
+      if (disposed || paused()) return
       clearTimeout(retryTimer)
       source?.close()
       const es = new EventSource("/api/events")
@@ -181,15 +196,15 @@ export function useDashboard() {
 
     // Watchdog for a stream that is open but silent.
     const watchdog = setInterval(async () => {
-      if (Date.now() - lastHeard < QUIET_MS || pending) return
+      if (paused() || Date.now() - lastHeard < QUIET_MS || pending) return
       try {
         await fetchMachines()
-        if (disposed) return
+        if (disposed || paused()) return
         lastHeard = Date.now()
         // The server is there but the stream may be stale: reopen it.
         connect()
       } catch {
-        if (disposed) return
+        if (disposed || paused()) return
         unreachable()
         connect()
       }
@@ -204,7 +219,7 @@ export function useDashboard() {
       try {
         await fetchMachines(CLOSE_FETCH_MS)
       } catch {
-        if (disposed || !closely.current) return
+        if (disposed || paused() || !closely.current) return
         clearTimeout(giveUpTimer)
         giveUpTimer = undefined
         unreachable()
@@ -214,10 +229,46 @@ export function useDashboard() {
       }
     }, CLOSE_WATCH_MS)
 
-    const wake = () => {
-      if (document.visibilityState !== "visible") return
-      if (!source || source.readyState === EventSource.CLOSED) connect()
+    // A paused page closes the stream and drops its requests, so a phone isn't
+    // woken every few seconds for updates nobody sees. The connection state is
+    // left as it was: "reconnecting" would read as the server going away, which
+    // is what a pending Sleep, Shut down or Hangar update watches for.
+    const pause = () => {
+      loadId++ // A snapshot still in flight is out of date by the time anyone looks.
+      pending = null
+      for (const controller of inflight) controller.abort()
+      clearTimeout(retryTimer)
+      clearTimeout(giveUpTimer)
+      giveUpTimer = undefined
+      source?.close()
+      source = null
     }
+
+    /** Back in view, back online or watching closely: reopen the stream, whose opening takes a fresh snapshot. */
+    const resume = () => {
+      if (paused()) return
+      if (source && source.readyState !== EventSource.CLOSED) return
+      lastHeard = Date.now()
+      connect()
+    }
+
+    /** Opens or closes the stream to match visibility and the close watch. */
+    const sync = () => {
+      if (!pageHidden()) {
+        holdOver = false
+        clearTimeout(holdTimer)
+        holdTimer = undefined
+      } else if (closely.current && !holdOver && holdTimer === undefined) {
+        holdTimer = setTimeout(() => {
+          holdOver = true
+          holdTimer = undefined
+          sync()
+        }, HIDDEN_WATCH_MS)
+      }
+      if (paused()) pause()
+      else resume()
+    }
+    syncRef.current = sync
 
     reconnectRef.current = () => {
       clearTimeout(giveUpTimer)
@@ -226,20 +277,18 @@ export function useDashboard() {
       connect()
     }
 
-    connect()
-    document.addEventListener("visibilitychange", wake)
-    window.addEventListener("online", wake)
+    if (!paused()) connect()
+    document.addEventListener("visibilitychange", sync)
+    window.addEventListener("online", resume)
 
     return () => {
       disposed = true
-      for (const controller of inflight) controller.abort()
+      clearTimeout(holdTimer)
+      pause()
       clearInterval(watchdog)
       clearInterval(closeWatch)
-      clearTimeout(retryTimer)
-      clearTimeout(giveUpTimer)
-      source?.close()
-      document.removeEventListener("visibilitychange", wake)
-      window.removeEventListener("online", wake)
+      document.removeEventListener("visibilitychange", sync)
+      window.removeEventListener("online", resume)
     }
   }, [])
 
@@ -247,6 +296,7 @@ export function useDashboard() {
   /** Check on the server every few seconds while a power command may take it away. */
   const watchClosely = useCallback((on: boolean) => {
     closely.current = on
+    syncRef.current()
   }, [])
   return { ...state, retry, watchClosely }
 }
