@@ -2,7 +2,7 @@
 # Tempo Cloud worklogs through api.tempo.io (v4). Token: ~/.config/tempo/token.
 # Usage:
 #   tempo.sh list <from> [to]
-#   tempo.sh log <date> --hours <n> [--issue <id>] [--dry-run] < description.md
+#   tempo.sh log <date> --hours <n> [--issue <id>] [--dry-run] --description-file <file>
 #   tempo.sh edit <worklogId> [--hours <n>] [--issue <id>] [--description-file <file>]
 #   tempo.sh delete <worklogId>
 set -euo pipefail
@@ -11,7 +11,7 @@ exec python3 -I - "$DIR" "$@" <<'PY'
 import json, os, sys, urllib.request, urllib.error
 
 home, cmd, *args = sys.argv[1:] + [""] * (2 - len(sys.argv[1:])) if len(sys.argv) < 3 else sys.argv[1:]
-USAGE = "usage: tempo.sh list <from> [to] | log <date> --hours N [--issue ID] [--dry-run] | edit <id> [--hours N] [--description-file F] | delete <id>"
+USAGE = "usage: tempo.sh list <from> [to] | log <date> --hours N [--issue ID] [--dry-run] --description-file F | edit <id> [--hours N] [--description-file F] | delete <id>"
 if cmd not in ("list", "log", "edit", "delete") or (cmd != "log" and not args) or (cmd == "log" and not args):
     sys.exit(USAGE)
 cfg = json.load(open(f"{home}/config.json"))
@@ -47,8 +47,13 @@ elif cmd == "log":
     if existing:
         for w in existing: show(w)
         sys.exit(f"error: a worklog already exists on {date} for issue {issue}; use `edit <id>` to change it.")
+    if not opt("--description-file"):
+        sys.exit("error: log needs --description-file <file> (stdin is the script itself, so a redirect is never read).")
+    description = open(opt("--description-file")).read().strip()
+    if not description:
+        sys.exit("error: the description file is empty; Tempo would post its default text.")
     body = {"authorAccountId": cfg["accountId"], "issueId": issue, "startDate": date, "startTime": cfg["startTime"],
-            "timeSpentSeconds": int(hours * 3600), "billableSeconds": int(hours * 3600), "description": sys.stdin.read().strip()}
+            "timeSpentSeconds": int(hours * 3600), "billableSeconds": int(hours * 3600), "description": description}
     if "--dry-run" in args:
         print(json.dumps({**body, "description": body["description"][:80] + "…"}, indent=2)); sys.exit()
     show(call("POST", "/worklogs", body))

@@ -17,7 +17,7 @@ description: Read, create, edit or delete worklogs in Tempo (Jira) for Roger thr
 
 ```bash
 tempo.sh list 2026-11-02 2026-11-03                  # id, date, hours, issue, first line
-tempo.sh log 2026-11-03 --hours 8 < worklog.md       # description from stdin; --dry-run prints the payload
+tempo.sh log 2026-11-03 --hours 8 --description-file worklog.md       # stdin is never read; --dry-run prints the payload
 tempo.sh edit 126922 --hours 7.5 --description-file worklog.md
 tempo.sh delete 126922
 ```

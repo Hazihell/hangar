@@ -39,7 +39,7 @@ A manager-ready account of one day's work, written from git history and posted a
 
    To correct a posted log, edit it in place rather than posting again: `sherlock set <logId> comment=@<file> spent=<n>`, done when the reply has `saved: true` and an empty `mismatched`.
 
-8. **Post to Tempo.** The approval in step 6 covers this too. Run `~/.claude/skills/tempo/tempo.sh list <DATE>` first: when a worklog already exists for that date, say so and stop (offer `edit` only if Roger asks). Otherwise run `~/.claude/skills/tempo/tempo.sh log <DATE> --hours <n> < /tmp/worklog/<DATE>.md` and confirm the printed id, date and hours. Done when `list <DATE>` shows exactly one worklog with the right hours. See the `tempo` skill for setup and errors.
+8. **Post to Tempo.** The approval in step 6 covers this too. Run `~/.claude/skills/tempo/tempo.sh list <DATE>` first: when a worklog already exists for that date, say so and stop (offer `edit` only if Roger asks). Otherwise run `~/.claude/skills/tempo/tempo.sh log <DATE> --hours <n> --description-file /tmp/worklog/<DATE>.md` and confirm the printed id, date and hours. Then run `list <DATE>`: the first line shown must be `Worklog for <M/D/YY>`. Tempo posts its default description ("Trabalho sobre o ticket SR-874") when the description is empty; when the line differs, run `~/.claude/skills/tempo/tempo.sh edit <id> --description-file /tmp/worklog/<DATE>.md` and list again. Done when `list <DATE>` shows exactly one worklog with the right hours and the right first line. See the `tempo` skill for setup and errors.
 
 Sherlock dates a log in UTC at the moment of posting, so a log posted late in the local evening shows the next day's date. The date line in the text is the date the log covers.
 
