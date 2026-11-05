@@ -10,6 +10,9 @@ skills/impeccable/scripts/bin/
 # Framer skills hold per-site data; they live in each site project instead
 skills/framer/
 skills/framer-code-components/
+# Sherlock skills ship with the sherlock CLI; each machine links them from its own checkout
+skills/sherlock
+skills/sherlock-triage
 
 # Dashboard build output and local installs
 dashboard/server/node_modules/
