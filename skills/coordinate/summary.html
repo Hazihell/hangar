@@ -9,7 +9,8 @@ tasks: one entry per task.
   changed    what is now different, for the user
   views      the shape of the change, as its worker drew it: caption says what it shows,
              kind is "diff" or "text", body is the view itself in plain text
-  shots     screenshots: src is the image's absolute path, caption says what it shows
+  shots     screenshots: src is the image in a form the host's view loads (an absolute path where it inlines
+             local files, a data: URI where it does not), caption says what it shows
   seen       where it was seen working, and what was not seen
   review     what the review found and how it closed
   beyond     anything the worker built beyond the brief, one sentence each
@@ -24,6 +25,8 @@ open: decisions still open that belong to no task, in the same shape as decision
 Leave any list empty when it has nothing.
 -->
 <html><head><meta charset="utf-8"><style>
+/* Fallback theme: a host that sets these variables on :root wins, since :where() adds no specificity. */
+:where(:root){--background:#fbfbfa;--foreground:#1f2326;--muted:#eef0f1;--muted-foreground:#5d666d;--border:#d9dde0;--input:#c4cacf;--primary:#1f6f8b;--primary-foreground:#fff;--secondary:#e3eef2;--secondary-foreground:#123f50;--code-background:#f1f3f4;--code-foreground:#22292e;--success:#2c7a3f;--destructive:#b3372c;--warning:#9a6200;--radius:8px;--font-sans:system-ui,-apple-system,"Segoe UI",sans-serif;--font-mono:ui-monospace,"SF Mono",Menlo,monospace}
 body{font-family:var(--font-sans);font-size:14px;line-height:1.5;color:var(--foreground);padding-bottom:4px}
 #summary{margin:0 0 6px}
 #count{color:var(--muted-foreground);font-size:13px;margin:0 0 18px}
@@ -32,11 +35,9 @@ h2{font-size:16px;font-weight:600;margin:0 0 6px}
 h3{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--muted-foreground);margin:16px 0 6px}
 blockquote{margin:0 0 10px;padding-left:10px;border-left:3px solid var(--border);color:var(--muted-foreground);font-style:italic}
 p{margin:0 0 8px}
-.shots{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px;margin:10px 0}
+.shots{display:grid;gap:16px;margin:12px 0}
 figure{margin:0}
-figure img{width:100%;border:1px solid var(--border);border-radius:var(--radius);display:block;cursor:zoom-in;background:var(--muted)}
-figure.big{grid-column:1/-1}
-figure.big img{cursor:zoom-out}
+figure img{width:100%;border:1px solid var(--border);border-radius:var(--radius);display:block;background:var(--muted)}
 .view{margin:10px 0}
 .view pre{margin:0;overflow-x:auto;background:var(--code-background);color:var(--code-foreground);border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px;font:12px/1.55 var(--font-mono)}
 .view .add{color:var(--success)}
@@ -144,7 +145,6 @@ document.addEventListener('change',build);
 document.addEventListener('click',e=>{
  const c=e.target.dataset.change;
  if(c!==undefined){const el=$(`[data-made="${c}"]`);el.hidden=!el.hidden;e.target.textContent=el.hidden?'Change':'Keep';if(!el.hidden)el.focus();build()}
- if(e.target.matches('figure img'))e.target.closest('figure').classList.toggle('big');
 });
 $('#show').onclick=()=>{const o=$('#out');o.hidden=!o.hidden;$('#show').textContent=o.hidden?'Show text':'Hide text'};
 $('#copy').onclick=async()=>{const t=build();let ok=false;
