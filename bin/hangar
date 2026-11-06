@@ -1048,7 +1048,7 @@ cmd_install() {
   dashboard_node || return 1
   say "System packages"
   add_gh_repo || warn "couldn't add GitHub's apt source; installing Ubuntu's older gh instead"
-  sudo apt-get update -q && sudo apt-get install -y -q build-essential python3 git curl unzip xz-utils jq gh
+  sudo apt-get update -q && sudo apt-get install -y -q build-essential python3 python3-venv ffmpeg git curl unzip xz-utils jq gh
   say "tea (Gitea CLI)"
   install_tea || warn "tea install failed; get it from https://gitea.com/gitea/tea/releases"
   say "Claude Code"
