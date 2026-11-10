@@ -1,6 +1,6 @@
 # PR reviews in the worklog
 
-Gather the review comments Roger wrote on the worklog's date, from him or through the Gitea API. Each reviewed PR is its own topic, even across repositories:
+Gather the review comments Roger wrote on the worklog's date, from him or through the Gitea API. Each reviewed PR is its own topic, under its repository's section:
 
 ```markdown
 ### PR Review - feat(phone-input): add PhoneInput, PhoneDisplay, and formatDisplayPhoneNumber #126

@@ -1,6 +1,6 @@
 ---
 name: worklog
-description: Write the day's worklog from git history and, once Roger confirms the preview, post it with its hours to his Sherlock project.
+description: Write the day's worklog from git history and, once Roger confirms the preview, post it with its hours to Sherlock and Tempo. `partial` posts today so far plus the rest of the day's plan to Tempo only.
 disable-model-invocation: true
 ---
 
@@ -8,16 +8,22 @@ disable-model-invocation: true
 
 A manager-ready account of one day's work, written from git history and posted as a log on a Sherlock project and as a Tempo worklog. Every post carries Roger's name and notifies the project's people, so nothing is posted until he confirms the exact preview.
 
+When Roger asks for a **partial** worklog (today so far plus the rest of the day's plan, Tempo only), read [`partial.md`](partial.md) before step 1.
+
 ## Steps
 
 1. **Resolve the date.** Default to today; accept `today`, `yesterday` or an explicit date. Relative dates come from the shell's local calendar (`date +%F`), never from a UTC timestamp in the chat. The day runs from `00:00:00` to `23:59:59` local. Done when you hold one `YYYY-MM-DD`.
 
-2. **Collect the commits.** Run:
+2. **Collect the commits** from both repositories, wherever the skill runs from:
+   - OLA: `~/Dev/99x/ola-ui`
+   - OLA Interface: `~/Dev/99x/olalib`
+
+   In each one, run:
    ```bash
-   git fetch --all --quiet
-   git log --all --author="$(git config user.name)" --since="<DATE> 00:00:00" --until="<DATE> 23:59:59" --pretty=format:"=== %h %s%n%b" --reverse
+   git -C <REPO> fetch --all --quiet
+   git -C <REPO> log --all --author="$(git -C <REPO> config user.name)" --since="<DATE> 00:00:00" --until="<DATE> 23:59:59" --pretty=format:"=== %h %s%n%b" --reverse
    ```
-   With no commits, stop and report `❌ No commits found for '<DATE>' by <USER>.`
+   With no commits in either, stop and report `❌ No commits found for '<DATE>' by <USER>.` Done when you hold each repository's commits, even if one has none.
 
 3. **Sort out the work.** The worklog covers product work: features, fixes, refactors, tests, research and docs. These stay out:
    - Release chores: `chore(release)` version bumps and branch version suffixes.
@@ -39,16 +45,23 @@ A manager-ready account of one day's work, written from git history and posted a
 
    To correct a posted log, edit it in place rather than posting again: `sherlock set <logId> comment=@<file> spent=<n>`, done when the reply has `saved: true` and an empty `mismatched`.
 
-8. **Post to Tempo.** The approval in step 6 covers this too. Run `~/.claude/skills/tempo/tempo.sh list <DATE>` first: when a worklog already exists for that date, say so and stop (offer `edit` only if Roger asks). Otherwise run `~/.claude/skills/tempo/tempo.sh log <DATE> --hours <n> --description-file /tmp/worklog/<DATE>.md` and confirm the printed id, date and hours. Then run `list <DATE>`: the first line shown must be `Worklog for <M/D/YY>`. Tempo posts its default description ("Trabalho sobre o ticket SR-874") when the description is empty; when the line differs, run `~/.claude/skills/tempo/tempo.sh edit <id> --description-file /tmp/worklog/<DATE>.md` and list again. Done when `list <DATE>` shows exactly one worklog with the right hours and the right first line. See the `tempo` skill for setup and errors.
+8. **Post to Tempo.** The approval in step 6 covers this too. Run `~/.claude/skills/tempo/tempo.sh list <DATE>` first: when a worklog already exists for that date, say so and skip this step (offer `edit` only if Roger asks). On a day he posted a partial worklog, that entry stays as it is. Otherwise run `~/.claude/skills/tempo/tempo.sh log <DATE> --hours <n> --description-file /tmp/worklog/<DATE>.md` and confirm the printed id, date and hours. Then run `list <DATE>`: the first line shown must be `Worklog for <M/D/YY>`. Tempo posts its default description ("Trabalho sobre o ticket SR-874") when the description is empty; when the line differs, run `~/.claude/skills/tempo/tempo.sh edit <id> --description-file /tmp/worklog/<DATE>.md` and list again. Done when `list <DATE>` shows exactly one worklog with the right hours and the right first line. See the `tempo` skill for setup and errors.
 
 Sherlock dates a log in UTC at the moment of posting, so a log posted late in the local evening shows the next day's date. The date line in the text is the date the log covers.
 
 ## Format
 
-The first line is `Worklog for <M/D/YY>` from the resolved date (`Worklog for 10/23/26`), followed by a blank line, then one level-3 header per topic, with plain bullets beneath:
+The first line is `Worklog for <M/D/YY>` from the resolved date (`Worklog for 10/23/26`), followed by a blank line. Then comes one level-2 section for each repository with commits that day: `## OLA Interface` first, then `## OLA`. Each section has one level-3 header per topic, with plain bullets beneath:
 
 ```markdown
 Worklog for 10/23/26
+
+## OLA Interface
+
+### Spinner (#215)
+- Spinner: Added a `Spinner` component for the duotone loading ring and moved every loading state onto it.
+
+## OLA
 
 ### Digital Profile Chart Drill-Down (#1874)
 - Chart segment dialog: Clicking a Sentiment or Media slice opens a dialog listing the posts behind it, paged 20 at a time with its total.
