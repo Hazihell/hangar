@@ -259,5 +259,28 @@ case "$2" in enable) mkdir -p $W; ln -sf ../hangar-rc@.service "$W/$4" ;; disabl
   rm -f $ST/systemctl
 fi
 
+# 14 extra Claude dirs: ~/.claude-99x gets the same links and settings, but only once it exists
+HOME=$B bash $B/.agents/bin/hangar setup >$T/out 2>&1; rc=$?
+[ $rc = 0 ] && [ ! -e $B/.claude-99x ] && ! grep -q '\.claude-99x' $T/out && pass "14a no ~/.claude-99x: setup creates nothing there" || { fail 14a; cat $T/out; }
+run $B; [ ! -e $B/.claude-99x ] && ! grep -q '\.claude-99x' $T/out && pass "14b no ~/.claude-99x: sync creates nothing there" || { fail 14b; cat $T/out; }
+X=$B/.claude-99x; mkdir -p $X/sessions; echo '{"oauthAccount":"99x"}' > $X/.claude.json; echo s1 > $X/sessions/s1; echo '{"theme": "old"}' > $X/settings.json
+HOME=$B bash $B/.agents/bin/hangar setup >$T/out 2>&1; rc=$?
+bad=0; for p in claude/CLAUDE.md claude/agents claude/hooks claude/statusline-command.sh skills; do [ "$(readlink $X/${p#claude/})" = $B/.agents/$p ] || bad=1; done
+[ $rc = 0 ] && [ $bad = 0 ] && cmp -s $X/settings.json $B/.agents/claude/settings.json && cmp -s $X/.hangar-settings-seen $B/.agents/claude/settings.json && grep -rqx '{"theme": "old"}' $B/.hangar-backup \
+  && pass "14c setup links ~/.claude-99x and carries settings there, backing up the old ones" || { fail 14c; cat $T/out; ls -la $X; }
+[ "$(cat $X/.claude.json)$(cat $X/sessions/s1)" = '{"oauthAccount":"99x"}s1' ] && [ "$(ls -A $X | tr '\n' ' ')" = ".claude.json .hangar-settings-seen CLAUDE.md agents hooks sessions settings.json skills statusline-command.sh " ] \
+  && pass "14d nothing else in ~/.claude-99x is touched" || { fail 14d; ls -A $X; }
+edit 's/"theme": "[a-z]*"/"theme": "violet"/' $X/settings.json; run $B; rc=$?
+[ $rc = 0 ] && [ "$(val $B theme)" = violet ] && cmp -s $X/settings.json $B/.claude/settings.json && git -C $T/remote.git show main:claude/settings.json | grep -q '"theme": "violet"' \
+  && pass "14e a change made in ~/.claude-99x is merged into the repo and spread to ~/.claude" || { fail 14e; cat $T/out; }
+run $A; [ "$(val $A theme)" = violet ] && pass "14f ... and reaches the other machine" || { fail 14f; cat $T/out; }
+setv $B tui low; edit 's/"theme": "[a-z]*"/"theme": "amber"/' $X/settings.json; run $B; rc=$?
+[ $rc = 0 ] && [ "$(val $B tui)$(val $B theme)" = lowamber ] && cmp -s $X/settings.json $B/.claude/settings.json && pass "14g separate edits in ~/.claude and ~/.claude-99x both kept" || { fail 14g; cat $T/out; }
+setv $B theme teal; edit 's/"theme": "[a-z]*"/"theme": "olive"/' $X/settings.json; run $B; rc=$?
+[ $rc = 1 ] && grep -q "changed in the same place here in $X and in the repo" $T/out && grep -qF "copy it to $X/settings.json" $T/out && grep -q '"theme": "olive"' $X/settings.json \
+  && pass "14h the same setting changed in both dirs stops sync, naming ~/.claude-99x" || { fail 14h; cat $T/out; }
+cp $B/.agents/claude/settings.json $X/settings.json; run $B; rc=$?
+[ $rc = 0 ] && [ "$(val $B theme)" = teal ] && cmp -s $X/settings.json $B/.claude/settings.json && pass "14i resolved by copying the repo's version into ~/.claude-99x" || { fail 14i; cat $T/out; }
+
 rm -rf $T
 if [ $FAILS = 0 ]; then echo "ALL PASS"; else echo "SOME FAILED"; exit 1; fi
