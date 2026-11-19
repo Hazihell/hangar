@@ -14,6 +14,8 @@ The repo is cloned to `~/.agents` on each machine, because Codex and the skills 
 
 `settings.json` is copied, not linked, because Claude Code rewrites it when you change a setting and can turn a link into a plain file. `hangar sync` merges changes from both machines, and stops to ask only when both changed the same setting.
 
+A second Claude account runs Claude Code from its own config dir: `~/.claude-99x` for 99x, used with `CLAUDE_CONFIG_DIR=~/.claude-99x` (in T3, the "Claude 99x" provider's home path). On a machine where that dir exists, hangar gives it the same links and `settings.json` as `~/.claude`, and `sync` merges a setting changed in either one. It never creates the dir, since signing in there is the opt-in, and leaves the rest of it alone: the sign-in, `.claude.json`, sessions and plugins. Another account is one more word in `CLAUDE_ACCOUNTS` at the top of `bin/hangar`.
+
 Not in the repo: Codex's `config.toml`, which is full of per-machine project paths; `settings.local.json`; logins; T3 Code's own settings, which live per machine in **Settings → Providers**; skills Claude Code syncs from a claude.ai account; and Framer skills, which hold per-site data and live in each site's project.
 
 Third-party skills keep their upstream licenses; see [THIRD_PARTY.md](THIRD_PARTY.md).

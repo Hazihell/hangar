@@ -8,25 +8,47 @@ BACKUP_ROOT="$HOME/.hangar-backup"
 T3_CHANNEL="${HANGAR_T3_CHANNEL:-nightly}"
 OS="$(uname -s)"
 
+# Claude Code config dirs, one per Claude account: ~/.claude, plus ~/.claude-<word>
+# for each word here, which Claude Code uses through CLAUDE_CONFIG_DIR. hangar manages
+# an extra one only once it exists on this machine: signing in there is the opt-in.
+CLAUDE_ACCOUNTS="99x"
+CLAUDE_DIRS=("$HOME/.claude")
+for account in $CLAUDE_ACCOUNTS; do
+  if [ -d "$HOME/.claude-$account" ]; then CLAUDE_DIRS+=("$HOME/.claude-$account"); fi
+done
+# Linked into every Claude dir. Each line: <path in repo>|<name in the dir>
+CLAUDE_LINKS="
+claude/CLAUDE.md|CLAUDE.md
+claude/agents|agents
+claude/hooks|hooks
+claude/statusline-command.sh|statusline-command.sh
+skills|skills
+"
+claude_links() { # CLAUDE_LINKS once for each Claude dir, as LINKS lines
+  local dir rel name
+  for dir in "${CLAUDE_DIRS[@]}"; do
+    while IFS='|' read -r rel name; do
+      if [ -n "$rel" ]; then printf '%s|%s/%s\n' "$rel" "$dir" "$name"; fi
+    done <<< "$CLAUDE_LINKS"
+  done
+}
+in_dir() { if [ "$1" != "$HOME/.claude" ]; then printf ' in %s' "$1"; fi; } # names an extra Claude dir in a message
+
 # Linked into place: tools only read these, so edits land in the repo.
 # Each line: <path in repo>|<path on this machine>
 LINKS="
-claude/CLAUDE.md|$HOME/.claude/CLAUDE.md
-claude/agents|$HOME/.claude/agents
-claude/hooks|$HOME/.claude/hooks
-claude/statusline-command.sh|$HOME/.claude/statusline-command.sh
-skills|$HOME/.claude/skills
+$(claude_links)
 cast/cast.md|$HOME/.codex/AGENTS.md
 bin/hangar|$HOME/.local/bin/hangar
 "
 # Copied, not linked: Claude Code rewrites this file when you change a setting
-# and can replace a symlink with a plain file. `sync` carries it both ways.
+# and can replace a symlink with a plain file. `sync` carries it both ways,
+# between the repo and <dir>/settings.json in every Claude dir.
 SETTINGS_REPO="$REPO/claude/settings.json"
-SETTINGS_LIVE="$HOME/.claude/settings.json"
-# The last version of this machine's settings already in the repo: the base
-# for merging a change made here with one that came from the other machine.
-SETTINGS_SEEN="$HOME/.claude/.hangar-settings-seen"
-apply_settings() { cp "$SETTINGS_REPO" "$SETTINGS_LIVE"; cp "$SETTINGS_REPO" "$SETTINGS_SEEN"; }
+# <dir>/.hangar-settings-seen: the last version of that dir's settings already in
+# the repo, the base for merging a change made there with one that came from elsewhere.
+SETTINGS_SEEN=.hangar-settings-seen
+apply_settings() { cp "$SETTINGS_REPO" "$1/settings.json"; cp "$SETTINGS_REPO" "$1/$SETTINGS_SEEN"; } # apply_settings <Claude dir>
 
 if [ -t 1 ]; then G=$'\e[32m' Y=$'\e[33m' R=$'\e[31m' D=$'\e[2m' N=$'\e[0m'; else G= Y= R= D= N=; fi
 ok()   { printf '  %sok%s    %s\n' "$G" "$N" "$*"; }
@@ -433,15 +455,19 @@ cmd_setup() {
   done <<< "$LINKS"
 
   say "Claude settings"
-  if [ -L "$SETTINGS_LIVE" ]; then backup "$SETTINGS_LIVE"; fi
-  if [ -f "$SETTINGS_LIVE" ] && ! cmp -s "$SETTINGS_LIVE" "$SETTINGS_REPO"; then
-    backup "$SETTINGS_LIVE"
-  fi
-  apply_settings
-  ok "$SETTINGS_LIVE matches the repo"
+  local dir live
+  for dir in "${CLAUDE_DIRS[@]}"; do
+    live="$dir/settings.json"
+    if [ -L "$live" ]; then backup "$live"; fi
+    if [ -f "$live" ] && ! cmp -s "$live" "$SETTINGS_REPO"; then
+      backup "$live"
+    fi
+    apply_settings "$dir"
+    ok "$live matches the repo"
+  done
 
   say "Skill dependencies"
-  local pkg dir
+  local pkg
   for pkg in "$REPO"/skills/*/package.json; do
     [ -f "$pkg" ] || continue
     dir="$(dirname "$pkg")"
@@ -471,23 +497,33 @@ cmd_sync() {
   if [ -d .git/rebase-merge ] || [ -d .git/rebase-apply ]; then
     say "A conflict from the last sync is still open. Fix it in $REPO, run 'git rebase --continue', then sync again."; exit 1
   fi
-  if [ -L "$SETTINGS_LIVE" ] || [ ! -f "$SETTINGS_LIVE" ]; then
-    say "$SETTINGS_LIVE should be a plain file. Run 'hangar setup' first."; exit 1
-  fi
-  # 1. bring this machine's settings changes into the repo, if it made any
-  if [ ! -f "$SETTINGS_SEEN" ]; then
-    if cmp -s "$SETTINGS_LIVE" "$SETTINGS_REPO"; then cp "$SETTINGS_REPO" "$SETTINGS_SEEN"
-    else
-      say "$SETTINGS_LIVE and the repo's copy differ, and there's no record of which is newer."
-      say "Keep the repo's:  hangar setup   (this machine's copy is backed up)"
-      say "Keep this one's:  cp $SETTINGS_LIVE $SETTINGS_REPO   then sync again"
-      exit 1
+  local i dir live seen captured=()
+  for dir in "${CLAUDE_DIRS[@]}"; do
+    live="$dir/settings.json"
+    if [ -L "$live" ] || [ ! -f "$live" ]; then
+      say "$live should be a plain file. Run 'hangar setup' first."; exit 1
     fi
-  fi
-  local captured; captured="$(mktemp)"; cp "$SETTINGS_LIVE" "$captured"
-  if ! cmp -s "$captured" "$SETTINGS_SEEN"; then
-    merge_settings "$captured" || exit 1
-  fi
+  done
+  # 1. bring each Claude dir's settings changes into the repo, if it made any
+  for dir in "${CLAUDE_DIRS[@]}"; do
+    live="$dir/settings.json" seen="$dir/$SETTINGS_SEEN"
+    if [ ! -f "$seen" ]; then
+      if cmp -s "$live" "$SETTINGS_REPO"; then cp "$SETTINGS_REPO" "$seen"
+      else
+        say "$live and the repo's copy differ, and there's no record of which is newer."
+        say "Keep the repo's:  hangar setup   (this machine's copy is backed up)"
+        say "Keep this one's:  cp $live $SETTINGS_REPO   then sync again"
+        exit 1
+      fi
+    fi
+  done
+  for i in "${!CLAUDE_DIRS[@]}"; do
+    dir="${CLAUDE_DIRS[i]}"
+    captured[i]="$(mktemp)"; cp "$dir/settings.json" "${captured[i]}"
+    if ! cmp -s "${captured[i]}" "$dir/$SETTINGS_SEEN"; then
+      merge_settings "${captured[i]}" "$dir" || exit 1
+    fi
+  done
   # 2. commit whatever changed here
   git add -A
   if ! git diff --cached --quiet; then
@@ -510,13 +546,19 @@ cmd_sync() {
   else
     warn "no remote yet; changes are committed here only"
   fi
-  # 4. apply the merged settings back, unless Claude Code changed them meanwhile
-  if ! cmp -s "$SETTINGS_LIVE" "$captured"; then
-    warn "Claude Code changed settings during the sync; kept them. Run 'hangar sync' again to merge."
-    rm -f "$captured"; exit 1
-  fi
-  rm -f "$captured"
-  apply_settings
+  # 4. apply the merged settings back to each Claude dir, unless Claude Code changed them meanwhile
+  local changed=0
+  for i in "${!CLAUDE_DIRS[@]}"; do
+    dir="${CLAUDE_DIRS[i]}"
+    if ! cmp -s "$dir/settings.json" "${captured[i]}"; then
+      warn "Claude Code changed settings$(in_dir "$dir") during the sync; kept them. Run 'hangar sync' again to merge."
+      changed=1
+    else
+      apply_settings "$dir"
+    fi
+    rm -f "${captured[i]}"
+  done
+  if [ "$changed" = 1 ]; then exit 1; fi
   if [ "$OS" = Linux ] && command -v systemctl >/dev/null && systemctl --user is-active --quiet hangar-dashboard.service 2>/dev/null; then
     systemctl --user restart hangar-dashboard.service || warn "Dashboard restart failed"
   elif [ "$OS" = Darwin ] && command -v launchctl >/dev/null && launchctl print "gui/$(id -u)/com.hangar.reporter" >/dev/null 2>&1; then
@@ -525,18 +567,18 @@ cmd_sync() {
   say "Up to date."
 }
 
-# Three-way merge of this machine's settings into the repo's copy, based on the
-# last version already in the repo from here. Stops if the same lines changed.
-merge_settings() {
-  local live="$1" merged; merged="$(mktemp)"
-  if git merge-file -p "$live" "$SETTINGS_SEEN" "$SETTINGS_REPO" > "$merged"; then
+# Three-way merge of a Claude dir's settings into the repo's copy, based on the
+# last version already in the repo from that dir. Stops if the same lines changed.
+merge_settings() { # merge_settings <copy of its settings.json> <Claude dir>
+  local live="$1" seen="$2/$SETTINGS_SEEN" merged; merged="$(mktemp)"
+  if git merge-file -p "$live" "$seen" "$SETTINGS_REPO" > "$merged"; then
     cp "$merged" "$SETTINGS_REPO"; rm -f "$merged"
-    cp "$live" "$SETTINGS_SEEN"   # this machine's change is in the repo now
+    cp "$live" "$seen"   # this dir's change is in the repo now
   else
     rm -f "$merged"
-    say "${R}Settings changed in the same place here and in the repo.${N} Nothing was overwritten."
-    say "Edit $SETTINGS_REPO to the version you want, copy it to $SETTINGS_LIVE, then sync again."
-    say "  ${D}this machine: $SETTINGS_LIVE   last agreed: $SETTINGS_SEEN${N}"
+    say "${R}Settings changed in the same place here$(in_dir "$2") and in the repo.${N} Nothing was overwritten."
+    say "Edit $SETTINGS_REPO to the version you want, copy it to $2/settings.json, then sync again."
+    say "  ${D}this machine: $2/settings.json   last agreed: $seen${N}"
     return 1
   fi
 }
@@ -564,9 +606,13 @@ cmd_doctor() {
     elif [ -e "$target" ]; then bad "$target is a plain file; run 'hangar setup'"
     else bad "$target missing; run 'hangar setup'"; fi
   done <<< "$LINKS"
-  if [ -L "$SETTINGS_LIVE" ]; then bad "$SETTINGS_LIVE is a symlink; run 'hangar setup'"
-  elif cmp -s "$SETTINGS_LIVE" "$SETTINGS_REPO" 2>/dev/null; then ok "$SETTINGS_LIVE matches the repo"
-  else warn "$SETTINGS_LIVE differs from the repo; run 'hangar sync'"; fi
+  local dir live
+  for dir in "${CLAUDE_DIRS[@]}"; do
+    live="$dir/settings.json"
+    if [ -L "$live" ]; then bad "$live is a symlink; run 'hangar setup'"
+    elif cmp -s "$live" "$SETTINGS_REPO" 2>/dev/null; then ok "$live matches the repo"
+    else warn "$live differs from the repo; run 'hangar sync'"; fi
+  done
 
   say "Tools T3 Code can see (login shell PATH)"
   local tool p
@@ -774,7 +820,7 @@ installed_version() {
 # The newest version each tool's own updater would install.
 latest_claude() { # the release channel Claude Code follows: settings' autoUpdatesChannel (stable or latest), default latest
   local channel
-  channel="$(sed -n 's/.*"autoUpdatesChannel"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p' "$SETTINGS_LIVE" 2>/dev/null | head -n 1)" || true
+  channel="$(sed -n 's/.*"autoUpdatesChannel"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p' "$HOME/.claude/settings.json" 2>/dev/null | head -n 1)" || true
   [ "$channel" = stable ] || channel=latest
   fetch "https://downloads.claude.ai/claude-code-releases/$channel"
 }
